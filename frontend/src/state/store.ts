@@ -4,9 +4,10 @@ import type { ConstraintsState, CornerId, EdgeSide, SymmetryMode } from '../type
 import { DEFAULT_CONSTRAINTS } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
 import { DEFAULT_HYPERPARAMS } from '../types/hyperparams'
-import type { InitFrom, PackingState } from '../types/solve'
+import type { PackingState } from '../types/solve'
 import { toTreeIn } from '../types/tree'
 import type { TreeState } from '../types/tree'
+import { getLeaves } from '../geometry/treeGeometry'
 import {
   addChildNode,
   createRootNode,
@@ -25,40 +26,55 @@ import { moveFlapPositions } from './actions/packingActions'
 import type { SavedSession } from '../types/session'
 import { isSavedSession } from '../types/session'
 import { downloadJson } from '../utils/download'
+import type { HistorySnapshot } from './history'
+import { HISTORY_LIMIT, snapshot } from './history'
 
 interface AppState {
   tree: TreeState
-  selectedNodeId: string | null
+  activeParentId: string | null
   constraints: ConstraintsState
-  selectedFlapId: string | null
+  selectedEdgeId: string | null
   pairingSourceId: string | null
+  pinTargetMode: 'edge' | 'corner' | null
+  constraintError: string | null
   hyperparams: HyperparamsState
-  initFrom: InitFrom
   packing: PackingState | null
+  lastSolvedScale: number | null
   solving: boolean
   solveError: string | null
+  undoStack: HistorySnapshot[]
+  redoStack: HistorySnapshot[]
 
-  selectNode: (id: string | null) => void
+  pushUndoSnapshot: () => void
+  undo: () => void
+  redo: () => void
+  startOver: () => void
+
+  selectTreeNode: (id: string) => void
+  clearSelection: () => void
   createRootAt: (x: number, y: number) => void
   addChildAt: (parentId: string, x: number, y: number) => void
   moveNode: (id: string, x: number, y: number) => void
   setEdgeLength: (id: string, length: number) => void
   syncPairedLength: (id: string) => void
 
-  selectFlap: (id: string | null) => void
+  selectEdge: (id: string | null) => void
   setSymmetryMode: (mode: SymmetryMode) => void
   armPairing: (leafId: string) => void
   cancelPairing: () => void
   pairFlaps: (aId: string, bId: string) => void
+  armPinTarget: (mode: 'edge' | 'corner') => void
+  cancelPinTarget: () => void
   pinToSymmetry: (leafId: string) => void
   pinToEdge: (leafId: string, edge: EdgeSide) => void
   pinToCorner: (leafId: string, corner: CornerId) => void
   clearConstraint: (leafId: string) => void
+  clearConstraintError: () => void
   moveFlap: (id: string, x: number, y: number) => void
   snapFlap: (id: string) => void
+  setPackingScale: (scale: number) => void
 
   setHyperparams: (hyperparams: Partial<HyperparamsState>) => void
-  setInitFrom: (initFrom: InitFrom) => void
   runSolve: () => Promise<void>
 
   exportSession: () => void
@@ -67,26 +83,101 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   tree: { rootId: null, nodes: {} },
-  selectedNodeId: null,
+  activeParentId: null,
   constraints: DEFAULT_CONSTRAINTS,
-  selectedFlapId: null,
+  selectedEdgeId: null,
   pairingSourceId: null,
+  pinTargetMode: null,
+  constraintError: null,
   hyperparams: DEFAULT_HYPERPARAMS,
-  initFrom: 'random',
   packing: null,
+  lastSolvedScale: null,
   solving: false,
   solveError: null,
+  undoStack: [],
+  redoStack: [],
 
-  selectNode: (id) => set({ selectedNodeId: id }),
+  pushUndoSnapshot: () => {
+    const state = get()
+    const undoStack = [...state.undoStack, snapshot(state)].slice(-HISTORY_LIMIT)
+    set({ undoStack, redoStack: [] })
+  },
+
+  undo: () => {
+    const state = get()
+    if (state.undoStack.length === 0) return
+    const prev = state.undoStack[state.undoStack.length - 1]
+    set({
+      ...prev,
+      undoStack: state.undoStack.slice(0, -1),
+      redoStack: [...state.redoStack, snapshot(state)],
+      activeParentId: null,
+      selectedEdgeId: null,
+      pairingSourceId: null,
+      pinTargetMode: null,
+      constraintError: null,
+    })
+  },
+
+  redo: () => {
+    const state = get()
+    if (state.redoStack.length === 0) return
+    const next = state.redoStack[state.redoStack.length - 1]
+    set({
+      ...next,
+      redoStack: state.redoStack.slice(0, -1),
+      undoStack: [...state.undoStack, snapshot(state)],
+      activeParentId: null,
+      selectedEdgeId: null,
+      pairingSourceId: null,
+      pinTargetMode: null,
+      constraintError: null,
+    })
+  },
+
+  startOver: () => {
+    const state = get()
+    const undoStack = [...state.undoStack, snapshot(state)].slice(-HISTORY_LIMIT)
+    set({
+      tree: { rootId: null, nodes: {} },
+      constraints: DEFAULT_CONSTRAINTS,
+      packing: null,
+      lastSolvedScale: null,
+      activeParentId: null,
+      selectedEdgeId: null,
+      pairingSourceId: null,
+      pinTargetMode: null,
+      constraintError: null,
+      solveError: null,
+      undoStack,
+      redoStack: [],
+    })
+  },
+
+  selectTreeNode: (id) => {
+    const node = get().tree.nodes[id]
+    if (!node) return
+    const isRoot = node.parentId === null
+    const isLeaf = !isRoot && node.children.length === 0
+    if (isLeaf) {
+      set({ selectedEdgeId: id, activeParentId: id })
+    } else {
+      set({ selectedEdgeId: null, activeParentId: id })
+    }
+  },
+
+  clearSelection: () => set({ selectedEdgeId: null, activeParentId: null, pinTargetMode: null }),
 
   createRootAt: (x, y) => {
+    get().pushUndoSnapshot()
     const tree = createRootNode(x, y)
-    set({ tree, selectedNodeId: tree.rootId })
+    set({ tree, activeParentId: tree.rootId, selectedEdgeId: null })
   },
 
   addChildAt: (parentId, x, y) => {
-    const { tree, newId } = addChildNode(get().tree, parentId, x, y)
-    set({ tree, selectedNodeId: newId })
+    get().pushUndoSnapshot()
+    const { tree } = addChildNode(get().tree, parentId, x, y)
+    set({ tree })
   },
 
   moveNode: (id, x, y) => {
@@ -113,19 +204,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ tree })
   },
 
-  selectFlap: (id) => set({ selectedFlapId: id }),
+  selectEdge: (id) => set({ selectedEdgeId: id, pinTargetMode: null }),
 
   setSymmetryMode: (mode) => {
+    get().pushUndoSnapshot()
     set({ constraints: withSymmetryMode(get().constraints, mode), pairingSourceId: null })
   },
 
   armPairing: (leafId) => set({ pairingSourceId: leafId }),
   cancelPairing: () => set({ pairingSourceId: null }),
 
+  armPinTarget: (mode) => set({ pinTargetMode: mode, constraintError: null }),
+  cancelPinTarget: () => set({ pinTargetMode: null }),
+
   pairFlaps: (aId, bId) => {
     if (aId === bId) return
     const state = get()
     if (state.constraints.symmetryMode === 'none') return
+    get().pushUndoSnapshot()
     set({ constraints: withPair(state.constraints, aId, bId), pairingSourceId: null })
     get().syncPairedLength(aId)
     get().snapFlap(aId)
@@ -134,23 +230,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinToSymmetry: (leafId) => {
     const state = get()
     if (state.constraints.symmetryMode === 'none') return
+    get().pushUndoSnapshot()
     set({ constraints: withPinSymmetry(state.constraints, leafId) })
     get().snapFlap(leafId)
   },
 
   pinToEdge: (leafId, edge) => {
-    set({ constraints: withPinEdge(get().constraints, leafId, edge) })
+    get().pushUndoSnapshot()
+    set({ constraints: withPinEdge(get().constraints, leafId, edge), pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
   },
 
   pinToCorner: (leafId, corner) => {
-    set({ constraints: withPinCorner(get().constraints, leafId, corner) })
+    const state = get()
+    const conflict = Object.entries(state.constraints.perLeaf).find(
+      ([id, c]) => id !== leafId && c.kind === 'pin_corner' && c.corner === corner,
+    )
+    if (conflict) {
+      set({ constraintError: 'That corner is already pinned by another flap.', pinTargetMode: null })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ constraints: withPinCorner(state.constraints, leafId, corner), pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
   },
 
   clearConstraint: (leafId) => {
+    get().pushUndoSnapshot()
     set({ constraints: withClearedConstraint(get().constraints, leafId) })
   },
+
+  clearConstraintError: () => set({ constraintError: null }),
 
   moveFlap: (id, x, y) => {
     const packing = get().packing
@@ -165,11 +275,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().moveFlap(id, pos.x, pos.y)
   },
 
+  setPackingScale: (scale) => {
+    const packing = get().packing
+    if (!packing) return
+    set({ packing: { ...packing, scale } })
+  },
+
   setHyperparams: (patch) => {
     set({ hyperparams: { ...get().hyperparams, ...patch } })
   },
-
-  setInitFrom: (initFrom) => set({ initFrom }),
 
   runSolve: async () => {
     const state = get()
@@ -177,16 +291,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!treeIn) return
     set({ solving: true, solveError: null })
     try {
-      const useCurrent = state.initFrom === 'current' && state.packing != null
-      const options = useCurrent
+      const leaves = getLeaves(state.tree)
+      const packing = state.packing
+      const canUseCurrent = packing != null && leaves.every((id) => packing.positions[id] != null)
+      const options = canUseCurrent
         ? {
             initFrom: 'current' as const,
-            currentPositions: Object.entries(state.packing!.positions).map(([nodeId, p]) => ({
+            currentPositions: Object.entries(packing!.positions).map(([nodeId, p]) => ({
               nodeId,
               x: p.x,
               y: p.y,
             })),
-            currentScale: state.packing!.scale,
+            currentScale: packing!.scale,
           }
         : { initFrom: 'random' as const }
       const response = await fetchSolve(treeIn, state.constraints, state.hyperparams, options)
@@ -197,8 +313,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const positions: Record<string, { x: number; y: number }> = {}
       for (const p of response.leafPositions) positions[p.nodeId] = { x: p.x, y: p.y }
       for (const p of response.internalPositions) positions[p.nodeId] = { x: p.x, y: p.y }
+      get().pushUndoSnapshot()
       set({
         packing: { scale: response.scale, positions, diagnostics: response.diagnostics },
+        lastSolvedScale: response.scale,
         solving: false,
       })
     } catch (err) {
@@ -228,14 +346,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!isSavedSession(data)) {
       throw new Error('Unrecognized session file')
     }
+    get().pushUndoSnapshot()
     set({
       tree: data.tree,
       constraints: data.constraints,
       hyperparams: data.hyperparams,
       packing: data.packing,
-      selectedNodeId: null,
-      selectedFlapId: null,
+      lastSolvedScale: data.packing?.scale ?? null,
+      activeParentId: null,
+      selectedEdgeId: null,
       pairingSourceId: null,
+      pinTargetMode: null,
+      constraintError: null,
       solveError: null,
     })
   },

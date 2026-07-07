@@ -30,7 +30,7 @@ class SolveRequest(CamelModel):
 class SolveDiagnostics(CamelModel):
     restarts_attempted: int
     best_scale_circle: float
-    best_scale_octagon: Optional[float] = None
+    best_scale_refined: Optional[float] = None
     solve_time_ms: float
 
 

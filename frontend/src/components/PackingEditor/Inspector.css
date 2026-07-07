@@ -1,9 +1,15 @@
-.constraint-panel {
+.inspector-stack {
   position: absolute;
   bottom: 0.75rem;
   left: 0.75rem;
   right: 0.75rem;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.inspector-panel {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -15,13 +21,29 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
-.constraint-panel-label {
+.inspector-panel-error {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.inspector-label {
   font-family: var(--mono, monospace);
   color: #6b7280;
   margin-right: 0.25rem;
 }
 
-.constraint-panel button {
+.inspector-width {
+  font-family: var(--mono, monospace);
+  color: #b45309;
+}
+
+.inspector-hint {
+  color: #9ca3af;
+  flex: 1;
+}
+
+.inspector-panel button {
   font-size: 0.75rem;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
@@ -30,7 +52,7 @@
   cursor: pointer;
 }
 
-.constraint-panel button:disabled {
+.inspector-panel button:disabled {
   color: #9ca3af;
   cursor: not-allowed;
 }

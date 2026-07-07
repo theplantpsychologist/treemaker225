@@ -1,0 +1,13 @@
+.scale-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #4b5563;
+}
+
+.scale-slider-value {
+  font-family: var(--mono, monospace);
+  color: #111827;
+  min-width: 5.5ch;
+}

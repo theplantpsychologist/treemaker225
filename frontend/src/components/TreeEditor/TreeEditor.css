@@ -16,14 +16,6 @@
   stroke-width: 2;
 }
 
-.tree-edge-label {
-  font-size: 10px;
-  fill: #9ca3af;
-  text-anchor: middle;
-  user-select: none;
-  pointer-events: none;
-}
-
 .tree-node {
   fill: #4b5563;
   stroke: white;
@@ -38,6 +30,11 @@
 .tree-node.selected {
   fill: #dc2626;
   stroke: #7f1d1d;
+}
+
+.tree-node.edge-selected {
+  stroke: #2563eb;
+  stroke-width: 3;
 }
 
 .empty-hint {

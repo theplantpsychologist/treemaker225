@@ -18,6 +18,10 @@
   overflow: visible;
 }
 
+.packing-editor-backdrop {
+  fill: transparent;
+}
+
 .packing-square {
   fill: white;
   stroke: #d1d5db;
@@ -62,20 +66,20 @@
   touch-action: none;
 }
 
-.flap-handle,
+.packing-river.selected {
+  stroke-width: 2.5;
+}
+
 .river-handle {
   fill: white;
   stroke-width: 1.5;
   cursor: nwse-resize;
   touch-action: none;
-}
-
-.flap-handle {
-  stroke: #2563eb;
-}
-
-.river-handle {
   stroke: #b45309;
+}
+
+.packing-flap.selected {
+  cursor: nwse-resize;
 }
 
 .overlap-line {
@@ -102,4 +106,24 @@
   color: #9ca3af;
   font-size: 0.85rem;
   pointer-events: none;
+}
+
+.packing-editor-canvas.stale {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.stale-banner {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  text-align: center;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  z-index: 3;
 }

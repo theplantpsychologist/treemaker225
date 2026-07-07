@@ -5,7 +5,8 @@ from typing import Set
 import networkx as nx
 
 from app.core.layout import solve_internal_layout
-from app.core.packing import run_circle_restart, run_octagon_restart
+from app.core.packing import run_circle_restart, run_polygon_restart
+from app.core.shapes import get_bases
 from app.core.tree import build_tree, get_leaves, total_edge_length
 from app.core.variable_plan import VariablePlan
 from app.schemas.constraints import Constraints
@@ -13,6 +14,7 @@ from app.schemas.solve import InitFrom, NodePositionOut, SolveDiagnostics, Solve
 
 
 def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
+    seen_corners: dict = {}
     for leaf_id, c in constraints.per_leaf.items():
         if leaf_id not in leaf_ids:
             raise ValueError(f"constraint references unknown leaf '{leaf_id}'")
@@ -27,8 +29,15 @@ def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
                 raise ValueError(f"'{leaf_id}' and '{partner}' must be mutually and exclusively paired")
         if c.kind == "pin_edge" and c.edge is None:
             raise ValueError(f"'{leaf_id}' has a pin_edge constraint with no edge specified")
-        if c.kind == "pin_corner" and c.corner is None:
-            raise ValueError(f"'{leaf_id}' has a pin_corner constraint with no corner specified")
+        if c.kind == "pin_corner":
+            if c.corner is None:
+                raise ValueError(f"'{leaf_id}' has a pin_corner constraint with no corner specified")
+            if c.corner in seen_corners:
+                raise ValueError(
+                    f"corner '{c.corner}' is already claimed by '{seen_corners[c.corner]}', "
+                    f"cannot also pin '{leaf_id}' there"
+                )
+            seen_corners[c.corner] = leaf_id
 
 
 def _normalize_paired_lengths(tree: nx.DiGraph, constraints: Constraints) -> None:
@@ -76,14 +85,13 @@ def solve(req: SolveRequest) -> SolveResponse:
     circle_results.sort(key=lambda r: r[1], reverse=True)
     best_circle_scale = circle_results[0][1]
 
-    best_scale_octagon = None
-    if hp.run_octagon_refinement:
+    bases = get_bases(hp.shape)
+    best_scale_refined = None
+    if bases is not None:
         top = circle_results[: max(1, hp.n_refine)]
-        octagon_results = [
-            run_octagon_restart(plan, tree, x, hp.alpha) for x, _scale, _success in top
-        ]
-        best_x, best_scale, _success = max(octagon_results, key=lambda r: r[1])
-        best_scale_octagon = best_scale
+        refined_results = [run_polygon_restart(plan, tree, x, hp.alpha, bases) for x, _scale, _success in top]
+        best_x, best_scale, _success = max(refined_results, key=lambda r: r[1])
+        best_scale_refined = best_scale
     else:
         best_x, best_scale, _success = circle_results[0]
 
@@ -103,7 +111,7 @@ def solve(req: SolveRequest) -> SolveResponse:
         diagnostics=SolveDiagnostics(
             restarts_attempted=len(circle_results),
             best_scale_circle=float(best_circle_scale),
-            best_scale_octagon=best_scale_octagon,
+            best_scale_refined=best_scale_refined,
             solve_time_ms=elapsed_ms,
         ),
     )

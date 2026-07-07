@@ -21,7 +21,7 @@ def _tree_payload(extra_constraints=None, symmetry_mode="none", n_restarts=20):
             "symmetryMode": symmetry_mode,
             "perLeaf": extra_constraints or {},
         },
-        "hyperparams": {"nRestarts": n_restarts, "runOctagonRefinement": False, "seed": 7},
+        "hyperparams": {"nRestarts": n_restarts, "shape": "circle", "seed": 7},
     }
 
 
@@ -109,6 +109,17 @@ def test_double_pairing_is_rejected():
             "leaf_c": {"kind": "pair", "pairedWith": "leaf_a"},
         },
         symmetry_mode="book",
+    )
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 422
+
+
+def test_two_leaves_pinned_to_same_corner_is_rejected():
+    payload = _tree_payload(
+        {
+            "leaf_a": {"kind": "pin_corner", "corner": "bottom_right"},
+            "leaf_b": {"kind": "pin_corner", "corner": "bottom_right"},
+        },
     )
     resp = client.post("/api/solve", json=payload)
     assert resp.status_code == 422

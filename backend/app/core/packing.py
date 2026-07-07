@@ -4,7 +4,6 @@ import networkx as nx
 import numpy as np
 from scipy.optimize import minimize
 
-from app.core.octagon import OCT_BASES
 from app.core.tree import find_distance
 from app.core.variable_plan import VariablePlan
 
@@ -49,12 +48,16 @@ def run_circle_restart(
     return result.x, float(scale), bool(result.success)
 
 
-def run_octagon_restart(
-    plan: VariablePlan, tree: nx.DiGraph, x0: np.ndarray, alpha: float
+def run_polygon_restart(
+    plan: VariablePlan,
+    tree: nx.DiGraph,
+    x0: np.ndarray,
+    alpha: float,
+    bases: Sequence[Tuple[float, float]],
 ) -> Tuple[np.ndarray, float, bool]:
-    """Single-restart octagon-packing solve: same objective as circle mode, but
+    """Single-restart polygon-packing solve: same objective as circle mode, but
     the pairwise separation is the smooth-max separating-axis distance over the
-    8 octagon face-normal directions instead of raw Euclidean distance."""
+    given shape's face-normal directions instead of raw Euclidean distance."""
 
     def objective(x: np.ndarray) -> float:
         return -x[-1]
@@ -65,7 +68,7 @@ def run_octagon_restart(
             ax, ay = positions[a]
             bx, by = positions[b]
             dx, dy = ax - bx, ay - by
-            projections = [dx * bx_ + dy * by_ for bx_, by_ in OCT_BASES]
+            projections = [dx * bx_ + dy * by_ for bx_, by_ in bases]
             return smooth_max(projections, alpha) - scale * dist
 
         return {"type": "ineq", "fun": fn}

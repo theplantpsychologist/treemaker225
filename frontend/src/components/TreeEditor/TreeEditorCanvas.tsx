@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
 import { colorForConstraint } from '../../constants/constraintColors'
 import { useTreeEditorInteraction } from './useTreeEditorInteraction'
+import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import './TreeEditor.css'
 
 const NODE_RADIUS = 7
@@ -9,19 +11,54 @@ const NODE_RADIUS = 7
 export function TreeEditorCanvas() {
   const svgRef = useRef<SVGSVGElement>(null)
   const tree = useAppStore((s) => s.tree)
-  const selectedNodeId = useAppStore((s) => s.selectedNodeId)
-  const selectNode = useAppStore((s) => s.selectNode)
+  const activeParentId = useAppStore((s) => s.activeParentId)
+  const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
+  const clearSelection = useAppStore((s) => s.clearSelection)
   const perLeaf = useAppStore((s) => s.constraints.perLeaf)
-  const { onNodePointerDown, onPointerMove, onPointerUp, onBackgroundPointerDown } =
-    useTreeEditorInteraction(svgRef)
+  const createRootAt = useAppStore((s) => s.createRootAt)
+  const addChildAt = useAppStore((s) => s.addChildAt)
+  const { onNodePointerDown, onPointerMove, onPointerUp } = useTreeEditorInteraction(svgRef)
+  const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: 800, h: 600 })
+
+  useLayoutEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    pan.initializeBase(rect.width, rect.height)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') selectNode(null)
+      if (e.key === 'Escape') clearSelection()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectNode])
+  }, [clearSelection])
+
+  const onBackgroundPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // best-effort
+    }
+    pan.beginPan(e)
+  }
+  const onSvgPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    onPointerMove(e)
+    pan.onPanMove(e)
+  }
+  const onSvgPointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
+    onPointerUp()
+    if (pan.endPan() === 'click') {
+      const p = pan.toWorldPoint(e)
+      if (!tree.rootId) {
+        createRootAt(p.x, p.y)
+      } else if (activeParentId) {
+        addChildAt(activeParentId, p.x, p.y)
+      }
+    }
+  }
 
   const nodes = Object.values(tree.nodes)
 
@@ -29,16 +66,17 @@ export function TreeEditorCanvas() {
     <svg
       ref={svgRef}
       className="tree-editor-canvas"
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerUp}
+      viewBox={pan.viewBoxAttr}
+      onPointerMove={onSvgPointerMove}
+      onPointerUp={onSvgPointerUp}
+      onPointerLeave={onSvgPointerUp}
     >
       <rect
         className="tree-editor-bg"
-        x={0}
-        y={0}
-        width="100%"
-        height="100%"
+        x={pan.viewBox.x}
+        y={pan.viewBox.y}
+        width={pan.viewBox.w}
+        height={pan.viewBox.h}
         onPointerDown={onBackgroundPointerDown}
       />
 
@@ -64,28 +102,19 @@ export function TreeEditorCanvas() {
       })}
 
       {nodes.map((node) => {
-        if (!node.parentId) return null
-        const parent = tree.nodes[node.parentId]
-        return (
-          <text
-            key={`label-${node.id}`}
-            className="tree-edge-label"
-            x={(parent.x + node.x) / 2}
-            y={(parent.y + node.y) / 2}
-          >
-            {node.length!.toFixed(1)}
-          </text>
-        )
-      })}
-
-      {nodes.map((node) => {
-        const isLeaf = node.children.length === 0
-        const isSelected = node.id === selectedNodeId
-        const style = isLeaf && !isSelected ? { fill: colorForConstraint(node.id, perLeaf[node.id]) } : undefined
+        const isLeaf = !node.parentId ? false : node.children.length === 0
+        const isActiveParent = node.id === activeParentId
+        const isEdgeSelected = node.id === selectedEdgeId
+        const style = isLeaf && !isActiveParent ? { fill: colorForConstraint(node.id, perLeaf[node.id]) } : undefined
         return (
           <circle
             key={node.id}
-            className={'tree-node' + (isSelected ? ' selected' : '') + (isLeaf ? ' leaf' : '')}
+            className={
+              'tree-node' +
+              (isActiveParent ? ' selected' : '') +
+              (isEdgeSelected ? ' edge-selected' : '') +
+              (isLeaf ? ' leaf' : '')
+            }
             style={style}
             cx={node.x}
             cy={node.y}

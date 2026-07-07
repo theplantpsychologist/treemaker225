@@ -16,7 +16,7 @@ def _tree_payload():
                 {"id": "leaf_c", "parentId": "root", "length": 4},
             ],
         },
-        "hyperparams": {"nRestarts": 15, "runOctagonRefinement": False, "seed": 3},
+        "hyperparams": {"nRestarts": 15, "shape": "circle", "seed": 3},
     }
 
 

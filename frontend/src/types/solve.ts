@@ -9,7 +9,7 @@ export type InitFrom = 'random' | 'current'
 export interface SolveDiagnostics {
   restartsAttempted: number
   bestScaleCircle: number
-  bestScaleOctagon: number | null
+  bestScaleRefined: number | null
   solveTimeMs: number
 }
 
