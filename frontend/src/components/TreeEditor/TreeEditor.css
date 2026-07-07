@@ -1,0 +1,48 @@
+.tree-editor-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #fafafa;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.tree-editor-bg {
+  fill: transparent;
+}
+
+.tree-edge {
+  stroke: #6b7280;
+  stroke-width: 2;
+}
+
+.tree-edge-label {
+  font-size: 10px;
+  fill: #9ca3af;
+  text-anchor: middle;
+  user-select: none;
+  pointer-events: none;
+}
+
+.tree-node {
+  fill: #4b5563;
+  stroke: white;
+  stroke-width: 2;
+  cursor: grab;
+}
+
+.tree-node.leaf {
+  fill: #2563eb;
+}
+
+.tree-node.selected {
+  fill: #dc2626;
+  stroke: #7f1d1d;
+}
+
+.empty-hint {
+  fill: #9ca3af;
+  font-size: 14px;
+  text-anchor: middle;
+  pointer-events: none;
+}

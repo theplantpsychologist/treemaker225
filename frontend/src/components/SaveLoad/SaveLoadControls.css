@@ -1,0 +1,14 @@
+.save-load-controls {
+  display: flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.save-load-controls button {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  cursor: pointer;
+}

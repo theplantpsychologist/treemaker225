@@ -1,0 +1,14 @@
+.hp-field {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #6b7280;
+}
+
+.hp-field input[type='number'] {
+  width: 3.5rem;
+}
+
+.hp-checkbox {
+  gap: 0.25rem;
+}
