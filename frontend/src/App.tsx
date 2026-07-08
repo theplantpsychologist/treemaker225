@@ -54,12 +54,11 @@ function App() {
   const onDividerPointerUp = useCallback(() => {
     draggingDivider.current = false
   }, [])
-
   return (
     <div className="app-shell">
       <header className="app-header">
         <h1>Treemaker Pro</h1>
-        <span className={`backend-status backend-status--${backendStatus}`}>backend: {backendStatus}</span>
+        {/* <span className={`backend-status backend-status--${backendStatus}`}>backend: {backendStatus}</span> */}
         <ShapeSelector />
         <UndoRedoControls />
         <ThemeToggle />
@@ -81,7 +80,7 @@ function App() {
               </div>
             )}
             <TreeEditorCanvas />
-            <ConstraintLegend />
+            {/* <ConstraintLegend /> */}
           </div>
         </section>
         <div
@@ -97,7 +96,7 @@ function App() {
           </div>
           <PackingToolbar />
           <div className="pane-body">
-            <div className="pane-status-stack">
+            {/* <div className="pane-status-stack">
               {solveError && <div className="solve-error">{solveError}</div>}
               {packing && (
                 <div className="diagnostics-badge">
@@ -110,7 +109,7 @@ function App() {
                   {packing.diagnostics.solveTimeMs.toFixed(0)}ms
                 </div>
               )}
-            </div>
+            </div> */}
             <PackingEditorCanvas />
           </div>
         </section>

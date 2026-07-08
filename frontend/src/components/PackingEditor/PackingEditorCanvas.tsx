@@ -286,7 +286,7 @@ export function PackingEditorCanvas() {
             )
           })}
       </svg>
-      {packing && <div className="scale-badge">scale: {packing.scale.toFixed(4)}</div>}
+      {/* {packing && <div className="scale-badge">scale: {packing.scale.toFixed(4)}</div>} */}
       {!packing && <div className="packing-empty-hint">Run the solver to see the packing</div>}
       {stale && <div className="stale-banner">Tree changed — re-run the solver to update the packing</div>}
       <SolvingOverlay />

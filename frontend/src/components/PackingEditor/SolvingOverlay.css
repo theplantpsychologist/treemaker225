@@ -16,6 +16,6 @@
    size ancestor, .packing-editor-stage) so the robot covers the packing
    square precisely regardless of zoom/pane size. */
 .solving-overlay-robot {
-  width: min(100cqw, 100cqh);
-  height: min(100cqw, 100cqh);
+  width: min(70cqw, 70cqh);
+  height: min(70cqw, 70cqh);
 }
