@@ -10,8 +10,8 @@ export function SolvingOverlay() {
   if (!solving) return null
   return (
     <div className="solving-overlay">
-      <img src={robotLoading} alt="Solving…" className="solving-overlay-robot" />
-      <span>Solving…</span>
+      <img src={robotLoading} alt="Optimizing…" className="solving-overlay-robot" />
+      <span>Optimizing…</span>
     </div>
   )
 }

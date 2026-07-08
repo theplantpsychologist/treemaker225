@@ -44,7 +44,7 @@
 
 .packing-flap {
   fill: var(--flap-color);
-  fill-opacity: 0.15;
+  fill-opacity: 0.3;
   stroke: var(--flap-color);
   stroke-width: var(--sw-thin);
   cursor: grab;
@@ -52,11 +52,19 @@
 }
 
 .packing-flap.unconstrained {
+  fill-opacity: 0.1;
   filter: saturate(0.4) brightness(1.15);
 }
 
+/* Selected always wins, even over .unconstrained (a flap can carry both
+   classes at once) — explicit fill/stroke color change, not just a
+   thicker stroke, so selection reads clearly regardless of shape theme. */
 .packing-flap.selected {
+  fill: var(--color-selected);
+  fill-opacity: 0.35;
+  stroke: var(--color-selected);
   stroke-width: var(--sw-selected);
+  filter: none;
 }
 
 .symmetry-line {
@@ -87,7 +95,7 @@
 
 .packing-river {
   fill: var(--river-color);
-  fill-opacity: 0.2;
+  fill-opacity: 0.32;
   stroke: var(--river-color);
   stroke-width: var(--sw-hairline);
   cursor: grab;
@@ -95,8 +103,10 @@
 }
 
 .packing-river.selected {
+  fill: var(--color-selected);
+  fill-opacity: 0.4;
+  stroke: var(--color-selected);
   stroke-width: var(--sw-thick);
-  cursor: nwse-resize;
 }
 
 .packing-flap.selected {
@@ -133,17 +143,15 @@
   pointer-events: none;
 }
 
-.packing-editor-canvas.stale {
-  opacity: 0.35;
-  pointer-events: none;
-}
-
 .stale-banner {
   position: absolute;
   top: 0.75rem;
   left: 0.75rem;
   right: 0.75rem;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   background: #fef3c7;
   color: #92400e;
   border: 1px solid #fcd34d;

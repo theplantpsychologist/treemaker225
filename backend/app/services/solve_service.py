@@ -3,6 +3,7 @@ import time
 from typing import Set
 
 import networkx as nx
+import numpy as np
 
 from app.core.constraint_resolution import (
     collect_resolved_points,
@@ -66,6 +67,19 @@ def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
         raise ValueError(f"'{a.leaf_id}' and '{b.leaf_id}' resolve to the same fixed position")
 
 
+# Max per-restart jitter applied to a seeded multi-restart's position
+# variables (unit-square space) — restart 0 always gets zero noise (the
+# exact seed), ramping linearly up to this by the last restart.
+_SEED_NOISE_MAX = 0.25
+
+
+def _perturb_position_vars(x0: np.ndarray, n_position_vars: int, rng: random.Random, noise: float) -> np.ndarray:
+    x = x0.copy()
+    for i in range(n_position_vars):
+        x[i] = min(1.0, max(0.0, x[i] + rng.uniform(-noise, noise)))
+    return x
+
+
 def _normalize_paired_lengths(tree: nx.DiGraph, constraints: Constraints) -> None:
     """For every pair, sets both leaves' edge lengths to their average --
     radius formulas depend on length, and this must happen before the
@@ -94,29 +108,51 @@ def solve(req: SolveRequest) -> SolveResponse:
     _normalize_paired_lengths(tree, req.constraints)
     plan = VariablePlan(leaf_ids, req.constraints)
 
+    solver_args = (hp.solver_method, hp.tol, hp.max_iter)
+
     if req.init_from == InitFrom.CURRENT:
         if req.current_positions is None or req.current_scale is None:
             raise ValueError("initFrom is 'current' but currentPositions/currentScale were not provided")
         current_positions = {p.node_id: (p.x, p.y) for p in req.current_positions}
-        x0 = plan.encode_from_positions(current_positions, req.current_scale)
-        circle_results = [run_circle_restart(plan, tree, x0)]
+        base_x0 = plan.encode_from_positions(current_positions, req.current_scale)
+        if req.seed_multi_restart and hp.n_restarts > 1:
+            rng = random.Random(hp.seed)
+            n = hp.n_restarts
+            circle_results = [
+                run_circle_restart(
+                    plan,
+                    tree,
+                    _perturb_position_vars(base_x0, plan.n_position_vars, rng, _SEED_NOISE_MAX * i / (n - 1)),
+                    *solver_args,
+                )
+                for i in range(n)
+            ]
+        else:
+            circle_results = [run_circle_restart(plan, tree, base_x0, *solver_args)]
     else:
         rng = random.Random(hp.seed)
         total_length = total_edge_length(tree)
         scale_guess = 2.0 / total_length if total_length > 0 else 1.0
         circle_results = [
-            run_circle_restart(plan, tree, plan.random_initial_guess(rng, scale_guess))
+            run_circle_restart(plan, tree, plan.random_initial_guess(rng, scale_guess), *solver_args)
             for _ in range(hp.n_restarts)
         ]
-    circle_results.sort(key=lambda r: r[1], reverse=True)
+    # Sort by (success, scale) so a non-converged restart can never out-rank
+    # a converged one, regardless of its reported (possibly bogus,
+    # constraint-violating) scale -- falls back to ranking by scale alone
+    # only when every restart failed to converge.
+    circle_results.sort(key=lambda r: (r[2], r[1]), reverse=True)
     best_circle_scale = circle_results[0][1]
 
-    bases = get_bases(hp.shape, req.constraints.symmetry_mode, hp.hexagon_extra_rotation)
+    extra_rotation = hp.hexagon_extra_rotation if hp.shape == "hexagon" else hp.square_extra_rotation
+    bases = get_bases(hp.shape, req.constraints.symmetry_mode, extra_rotation)
     best_scale_refined = None
     if bases is not None:
         top = circle_results[: max(1, hp.n_refine)]
-        refined_results = [run_polygon_restart(plan, tree, x, hp.alpha, bases) for x, _scale, _success in top]
-        best_x, best_scale, _success = max(refined_results, key=lambda r: r[1])
+        refined_results = [
+            run_polygon_restart(plan, tree, x, hp.alpha, bases, *solver_args) for x, _scale, _success in top
+        ]
+        best_x, best_scale, _success = max(refined_results, key=lambda r: (r[2], r[1]))
         best_scale_refined = best_scale
     else:
         best_x, best_scale, _success = circle_results[0]

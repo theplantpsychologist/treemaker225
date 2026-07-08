@@ -14,6 +14,11 @@
   --flap-color: #16a34a;
   --river-color: #4ade80;
 
+  /* Always red, never themed/overridden — mirrors COLOR_DELETE/COLOR_SELECTED
+     in constants/constraintColors.ts. */
+  --color-delete: #dc2626;
+  --color-selected: #dc2626;
+
   font: 14px/145% var(--sans);
   color: var(--text);
   background: var(--bg);

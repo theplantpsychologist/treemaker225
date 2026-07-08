@@ -19,7 +19,7 @@ const EDGE_HIT_FRACTION = 0.15
  * shrinking a flap to nothing. */
 const MIN_FLAP_RADIUS_UNIT = 1 / 32
 
-type DragKind = 'move' | 'resizeFlap' | 'resizeRiver'
+type DragKind = 'move' | 'resizeFlap'
 
 interface Point {
   x: number
@@ -34,8 +34,6 @@ interface DragState {
   dragging: boolean
   center?: Point
   dir?: Point
-  p1?: Point
-  p2?: Point
   /** For a 'move' drag: the constant offset from the cursor's world
    * position to the flap's center, captured once the gesture crosses the
    * click threshold — added back on every subsequent move so the flap
@@ -50,9 +48,15 @@ export function usePackingEditorInteraction(
   const packing = useAppStore((s) => s.packing)
   const constraints = useAppStore((s) => s.constraints)
   const tree = useAppStore((s) => s.tree)
-  const bases = useAppStore((s) =>
-    getBases(s.hyperparams.shape, s.constraints.symmetryMode, s.hyperparams.hexagonExtraRotation),
-  )
+  const bases = useAppStore((s) => {
+    const extraRotation =
+      s.hyperparams.shape === 'hexagon'
+        ? s.hyperparams.hexagonExtraRotation
+        : s.hyperparams.shape === 'square'
+          ? s.hyperparams.squareExtraRotation
+          : false
+    return getBases(s.hyperparams.shape, s.constraints.symmetryMode, extraRotation)
+  })
   /** Leaves whose position is fully fixed — either directly (pin_corner) or
    * because a paired partner's own pin mirrors onto them — and therefore
    * must not be interactively dragged (see `moveFlapPositions`'s docstring
@@ -136,26 +140,14 @@ export function usePackingEditorInteraction(
     [toUnitPoint, pushUndoSnapshot, bases, unitsPerPixel],
   )
 
-  /** Mirrors `beginFlapPointerDown`'s select-then-drag pattern: an
-   * unselected river's pointerdown just selects it (no move concept exists
-   * for a river); only a pointerdown on an *already-selected* river starts
-   * a resize drag. */
-  const beginResizeRiver = useCallback(
-    (nodeId: string, p1: Point, p2: Point, isSelected: boolean, e: ReactPointerEvent) => {
-      capture(e)
-      if (!isSelected) {
-        selectEdge(nodeId)
-        return
-      }
-      dragState.current = {
-        kind: 'resizeRiver',
-        nodeId,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        dragging: false,
-        p1,
-        p2,
-      }
+  /** A river has no move/resize gesture at all — pointerdown always just
+   * selects it (for tree-editor highlighting and the Inspector's width
+   * display). Width changes only happen via the tree editor's edge length,
+   * to avoid the ungated "any click-drag on an already-selected river
+   * resizes it" bug this used to have. */
+  const selectRiver = useCallback(
+    (nodeId: string) => {
+      selectEdge(nodeId)
     },
     [selectEdge],
   )
@@ -176,7 +168,7 @@ export function usePackingEditorInteraction(
       const ds = dragState.current
       if (!ds || !packing) return
 
-      if ((ds.kind === 'move' || ds.kind === 'resizeRiver') && !ds.dragging) {
+      if (ds.kind === 'move' && !ds.dragging) {
         const dx = e.clientX - ds.startClientX
         const dy = e.clientY - ds.startClientY
         if (Math.hypot(dx, dy) < CLICK_THRESHOLD) return
@@ -200,17 +192,6 @@ export function usePackingEditorInteraction(
         const t = (p.x - ds.center.x) * ds.dir.x + (p.y - ds.center.y) * ds.dir.y
         const radius = Math.max(t * maxProjection(ds.dir, bases), MIN_FLAP_RADIUS_UNIT)
         setEdgeLength(ds.nodeId, radius / packing.scale)
-      } else if (ds.kind === 'resizeRiver' && ds.p1 && ds.p2) {
-        const dx = ds.p2.x - ds.p1.x
-        const dy = ds.p2.y - ds.p1.y
-        const len = Math.hypot(dx, dy) || 1e-9
-        const nx = -dy / len
-        const ny = dx / len
-        const mx = (ds.p1.x + ds.p2.x) / 2
-        const my = (ds.p1.y + ds.p2.y) / 2
-        const perp = (p.x - mx) * nx + (p.y - my) * ny
-        const width = Math.abs(perp) * 2
-        setEdgeLength(ds.nodeId, Math.max(width / packing.scale, 1e-6))
       }
     },
     [toUnitPoint, packing, resolvedFixedLeafIds, moveFlap, setEdgeLength, pushUndoSnapshot, bases],
@@ -224,5 +205,5 @@ export function usePackingEditorInteraction(
     dragState.current = null
   }, [onFlapClicked])
 
-  return { beginFlapPointerDown, beginResizeRiver, onPointerMove, onPointerUp }
+  return { beginFlapPointerDown, selectRiver, onPointerMove, onPointerUp }
 }

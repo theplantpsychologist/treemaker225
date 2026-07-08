@@ -38,6 +38,15 @@
   width: 5rem;
 }
 
+.settings-field select {
+  font-size: 0.85rem;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.3rem;
+}
+
 .settings-checkbox {
   justify-content: flex-start;
   gap: 0.5rem;

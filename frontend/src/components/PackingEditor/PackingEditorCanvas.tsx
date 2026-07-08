@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
 import { buildShapePoints } from '../../geometry/shapes'
@@ -39,8 +39,6 @@ interface FlapInfo {
 interface RiverInfo {
   key: string
   nodeId: string
-  p1: { x: number; y: number }
-  p2: { x: number; y: number }
   pathD: string
 }
 
@@ -68,6 +66,8 @@ export function PackingEditorCanvas() {
   const packing = useAppStore((s) => s.packing)
   const shape = useAppStore((s) => s.hyperparams.shape)
   const hexagonExtraRotation = useAppStore((s) => s.hyperparams.hexagonExtraRotation)
+  const squareExtraRotation = useAppStore((s) => s.hyperparams.squareExtraRotation)
+  const extraRotation = shape === 'hexagon' ? hexagonExtraRotation : shape === 'square' ? squareExtraRotation : false
   const clipToSquare = useAppStore((s) => s.clipToSquare)
   const constraints = useAppStore((s) => s.constraints)
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
@@ -78,7 +78,7 @@ export function PackingEditorCanvas() {
   const pinToCorner = useAppStore((s) => s.pinToCorner)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
   const unitsPerPixel = pan.pxToWorld / VIEW_SIZE
-  const { beginFlapPointerDown, beginResizeRiver, onPointerMove, onPointerUp } =
+  const { beginFlapPointerDown, selectRiver, onPointerMove, onPointerUp } =
     usePackingEditorInteraction(svgRef, unitsPerPixel)
 
   useEffect(() => {
@@ -91,6 +91,14 @@ export function PackingEditorCanvas() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [pinTargetMode, cancelPinTarget, selectEdge])
+
+  // Staleness is now rare (the store maintains a packing-position invariant
+  // on every add/delete) but still needs a defensive, dismissible banner —
+  // e.g. for a hand-edited import. Dismissal is transient per-episode UI
+  // state, not a store field, and re-arms whenever a NEW staleness episode
+  // begins (edge-detected on the false->true transition of `stale`).
+  const [staleDismissed, setStaleDismissed] = useState(false)
+  const wasStale = useRef(false)
 
   const onBackgroundPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
     try {
@@ -117,7 +125,7 @@ export function PackingEditorCanvas() {
     const riverList: RiverInfo[] = []
     if (!packing) return { flaps: flapList, rivers: riverList }
 
-    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, hexagonExtraRotation)
+    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
     const pathByNodeId = new Map(bands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
 
     for (const node of Object.values(tree.nodes)) {
@@ -128,7 +136,7 @@ export function PackingEditorCanvas() {
 
       const width = packing.scale * node.length
       if (node.children.length === 0) {
-        const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width, constraints.symmetryMode, hexagonExtraRotation)
+        const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width, constraints.symmetryMode, extraRotation)
         flapList.push({
           key: node.id,
           center: childPos,
@@ -142,28 +150,30 @@ export function PackingEditorCanvas() {
         riverList.push({
           key: node.id,
           nodeId: node.id,
-          p1: parentPos,
-          p2: childPos,
           pathD,
         })
       }
     }
     return { flaps: flapList, rivers: riverList }
-  }, [tree, packing, constraints, shape, hexagonExtraRotation])
+  }, [tree, packing, constraints, shape, extraRotation])
 
   const overlapAreas = useMemo(() => {
     if (!packing) return []
-    return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, hexagonExtraRotation)
-  }, [tree, packing, shape, constraints.symmetryMode, hexagonExtraRotation])
+    return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
+  }, [tree, packing, shape, constraints.symmetryMode, extraRotation])
 
   const stale = useMemo(() => isPackingStale(tree, packing), [tree, packing])
+  useEffect(() => {
+    if (stale && !wasStale.current) setStaleDismissed(false)
+    wasStale.current = stale
+  }, [stale])
 
   return (
     <div className="packing-editor-wrapper">
       <div className="packing-editor-stage">
       <svg
         ref={svgRef}
-        className={'packing-editor-canvas' + (stale ? ' stale' : '')}
+        className="packing-editor-canvas"
         viewBox={pan.viewBoxAttr}
         onPointerMove={onSvgPointerMove}
         onPointerUp={onSvgPointerUp}
@@ -208,7 +218,10 @@ export function PackingEditorCanvas() {
                 className={'packing-river' + (r.key === selectedEdgeId ? ' selected' : '')}
                 fillRule="evenodd"
                 d={r.pathD}
-                onPointerDown={(e) => beginResizeRiver(r.nodeId, r.p1, r.p2, r.key === selectedEdgeId, e)}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  selectRiver(r.nodeId)
+                }}
               />
             </g>
           ))}
@@ -287,8 +300,18 @@ export function PackingEditorCanvas() {
           })}
       </svg>
       {/* {packing && <div className="scale-badge">scale: {packing.scale.toFixed(4)}</div>} */}
-      {!packing && <div className="packing-empty-hint">Run the solver to see the packing</div>}
-      {stale && <div className="stale-banner">Tree changed — re-run the solver to update the packing</div>}
+      {/* {!packing && <div className="packing-empty-hint">Click Initialize to lay out the packing</div>}
+      {packing?.diagnostics.kind === 'naive' && (
+        <div className="packing-empty-hint">Preview — click Optimize to refine</div>
+      )} */}
+      {stale && !staleDismissed && (
+        <div className="stale-banner">
+          Tree changed — re-initialize or optimize to update the packing
+          <button className="dismiss-error" onClick={() => setStaleDismissed(true)}>
+            ×
+          </button>
+        </div>
+      )}
       <SolvingOverlay />
       </div>
       <Inspector />

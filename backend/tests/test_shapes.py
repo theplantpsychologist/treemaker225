@@ -31,3 +31,23 @@ def test_hexagon_diagonal_and_extra_rotation_compose():
 def test_other_shapes_ignore_symmetry_and_rotation_args():
     assert get_bases("octagon") == get_bases("octagon", symmetry_mode="diagonal", extra_rotation=True)
     assert get_bases("circle", symmetry_mode="diagonal", extra_rotation=True) is None
+
+
+def test_square_base_orientation_is_axis_aligned():
+    bases = get_bases("square")
+    assert math.isclose(_angle_offset(bases), 0.0, abs_tol=1e-9)
+
+
+def test_square_extra_rotation_adds_45_degrees():
+    bases = get_bases("square", extra_rotation=True)
+    assert math.isclose(_angle_offset(bases), math.pi / 4, abs_tol=1e-9)
+
+
+def test_square_ignores_symmetry_mode():
+    # Unlike hexagon, square's 45-degree rotation is purely the manual
+    # extra_rotation toggle -- any "default to rotated when diagonal" logic
+    # lives at the frontend store's call site, not in get_bases itself.
+    assert get_bases("square", symmetry_mode="diagonal") == get_bases("square")
+    assert get_bases("square", symmetry_mode="diagonal", extra_rotation=True) == get_bases(
+        "square", extra_rotation=True
+    )

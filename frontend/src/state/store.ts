@@ -5,9 +5,11 @@ import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
 import { DEFAULT_HYPERPARAMS } from '../types/hyperparams'
 import type { PackingState } from '../types/solve'
+import { hasSolvedOnce } from '../types/solve'
 import { toTreeIn } from '../types/tree'
 import type { TreeState } from '../types/tree'
 import { getLeaves } from '../geometry/treeGeometry'
+import { backfillMissingPositions, computeNaiveInitialization, naiveScale } from '../geometry/naiveInit'
 import {
   collectResolvedPoints,
   findAnyCollision,
@@ -70,7 +72,9 @@ interface AppState {
   clearSelection: () => void
   createRootAt: (x: number, y: number) => void
   addChildAt: (parentId: string, x: number, y: number) => void
+  initializePacking: () => void
   deleteActiveNode: () => void
+  deleteNodeById: (id: string) => void
   moveNode: (id: string, x: number, y: number) => void
   setEdgeLength: (id: string, length: number) => void
   syncPairedLength: (id: string) => void
@@ -205,13 +209,51 @@ export const useAppStore = create<AppState>((set, get) => ({
     // constraint, that constraint no longer makes sense — prune it rather
     // than leave a dangling reference the backend would reject at solve time.
     const { constraints, warning } = pruneLeafConstraint(get().constraints, parentId)
-    set({ tree, constraints, uiError: warning ?? get().uiError })
+    // Maintain the packing-position invariant once a packing exists (from
+    // Initialize or a real solve): every tree id always has a packing
+    // position, so `initFrom:'current'` stays viable and no grey-out/stale
+    // window ever opens for an ordinary add. Before that, packing stays
+    // null — the toolbar only offers "Initialize" until the user asks for
+    // a layout (see `initializePacking`).
+    const prevPacking = get().packing
+    const packing =
+      prevPacking == null
+        ? null
+        : {
+            ...prevPacking,
+            positions: backfillMissingPositions(tree, prevPacking.positions),
+            scale: prevPacking.diagnostics.kind === 'naive' ? naiveScale(tree) : prevPacking.scale,
+          }
+    set({ tree, constraints, packing, uiError: warning ?? get().uiError })
+  },
+
+  initializePacking: () => {
+    const state = get()
+    if (!state.tree.rootId) return
+    get().pushUndoSnapshot()
+    const naive = computeNaiveInitialization(state.tree)
+    set({
+      packing: { ...naive, diagnostics: { kind: 'naive' } },
+      constraints: DEFAULT_CONSTRAINTS,
+      lastSolvedScale: null,
+      pairingSourceId: null,
+      pinTargetMode: null,
+      constraintError: null,
+      uiError: null,
+    })
   },
 
   deleteActiveNode: () => {
-    const state = get()
-    const id = state.activeParentId
+    const id = get().activeParentId
     if (!id) return
+    get().deleteNodeById(id)
+  },
+
+  /** Shared by the tree editor's Backspace/Delete keybind (targeting
+   * `activeParentId`) and the Inspector's delete-flap button (targeting
+   * `selectedEdgeId`) — same underlying delete/prune logic either way. */
+  deleteNodeById: (id) => {
+    const state = get()
     const result = deleteNodeAction(state.tree, id)
     if (!result) {
       set({ uiError: "Can't delete a branch node — delete its children first." })
@@ -219,9 +261,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     get().pushUndoSnapshot()
     const { constraints } = pruneLeafConstraint(state.constraints, result.deletedId)
+    // Prune the deleted id from packing.positions in the same set() call as
+    // the tree mutation — tree and packing update atomically, so
+    // isPackingStale never observes an intermediate mismatched frame, and
+    // deleting never opens a warning/grey-out window (see decision #5).
+    let packing = state.packing
+    if (packing != null) {
+      if (result.tree.rootId == null) {
+        packing = null
+      } else {
+        const { [result.deletedId]: _dropped, ...positions } = packing.positions
+        packing = {
+          ...packing,
+          positions,
+          scale: packing.diagnostics.kind === 'naive' ? naiveScale(result.tree) : packing.scale,
+        }
+      }
+    }
     set({
       tree: result.tree,
       constraints,
+      packing,
       activeParentId: null,
       selectedEdgeId: null,
       uiError: null,
@@ -255,6 +315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectEdge: (id) => set({ selectedEdgeId: id, pinTargetMode: null }),
 
   setSymmetryMode: (mode) => {
+    const prevMode = get().constraints.symmetryMode
     get().pushUndoSnapshot()
     let constraints = withSymmetryMode(get().constraints, mode)
     // Some existing symmetry+boundary combos (book+left/right; a pin_corner
@@ -268,8 +329,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         clearedLeafIds.push(leafId)
       }
     }
+    // Nice default (not a hard lock, unlike hexagon's unconditional
+    // diagonal rotation) — square reads best rotated 45° under diagonal
+    // symmetry, so suggest it the moment this combination newly appears.
+    const hyperparams = get().hyperparams
+    const suggestSquareRotation = mode === 'diagonal' && prevMode !== 'diagonal' && hyperparams.shape === 'square'
     set({
       constraints,
+      hyperparams: suggestSquareRotation ? { ...hyperparams, squareExtraRotation: true } : hyperparams,
       pairingSourceId: null,
       constraintError:
         clearedLeafIds.length > 0
@@ -450,7 +517,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setHyperparams: (patch) => {
-    set({ hyperparams: { ...get().hyperparams, ...patch } })
+    const state = get()
+    const next = { ...state.hyperparams, ...patch }
+    // Same "nice default, not a lock" square-rotation suggestion as
+    // setSymmetryMode, mirrored here for the other direction of the same
+    // transition (switching TO square while diagonal is already active).
+    if (
+      patch.shape === 'square' &&
+      state.hyperparams.shape !== 'square' &&
+      state.constraints.symmetryMode === 'diagonal' &&
+      patch.squareExtraRotation === undefined
+    ) {
+      next.squareExtraRotation = true
+    }
+    set({ hyperparams: next })
   },
 
   setClipToSquare: (value) => set({ clipToSquare: value }),
@@ -474,6 +554,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               y: p.y,
             })),
             currentScale: packing!.scale,
+            // True only for the very first real solve — a multi-restart
+            // search anchored on the naive/manually-adjusted preview layout
+            // instead of a single deterministic refine. Every later solve
+            // (packing already has a real `solved` diagnostics) keeps the
+            // exact single-shot behavior so it iterates precisely from the
+            // previous solve + the user's own edits.
+            seedMultiRestart: !hasSolvedOnce(packing),
           }
         : { initFrom: 'random' as const }
       const response = await fetchSolve(treeIn, state.constraints, state.hyperparams, options)
@@ -486,7 +573,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const p of response.internalPositions) positions[p.nodeId] = { x: p.x, y: p.y }
       get().pushUndoSnapshot()
       set({
-        packing: { scale: response.scale, positions, diagnostics: response.diagnostics },
+        packing: { scale: response.scale, positions, diagnostics: { kind: 'solved', ...response.diagnostics } },
         lastSolvedScale: response.scale,
         solving: false,
       })
@@ -504,7 +591,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportSession: () => {
     const state = get()
     const session: SavedSession = {
-      version: 3,
+      version: 4,
       tree: state.tree,
       constraints: state.constraints,
       hyperparams: state.hyperparams,
@@ -519,14 +606,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!session) {
       throw new Error('Unrecognized session file')
     }
+    // Defensive: parseSavedSession's migration chain already backfills/prunes
+    // positions, but a hand-edited (already-v4) file could still be missing
+    // some — re-run it here too so the packing-position invariant holds
+    // regardless of where the session file came from.
+    const packing = session.packing
+      ? { ...session.packing, positions: backfillMissingPositions(session.tree, session.packing.positions) }
+      : null
     get().pushUndoSnapshot()
     set({
       tree: session.tree,
       constraints: session.constraints,
       hyperparams: session.hyperparams,
-      packing: session.packing,
+      packing,
       clipToSquare: session.clipToSquare ?? true,
-      lastSolvedScale: session.packing?.scale ?? null,
+      lastSolvedScale: packing?.diagnostics.kind === 'solved' ? packing.scale : null,
       activeParentId: null,
       selectedEdgeId: null,
       pairingSourceId: null,

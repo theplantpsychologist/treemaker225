@@ -1,16 +1,28 @@
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from './constraints'
 import type { HyperparamsState } from './hyperparams'
-import type { PackingState } from './solve'
+import type { PackingState, SolveDiagnostics } from './solve'
 import type { TreeState } from './tree'
+import { backfillMissingPositions } from '../geometry/naiveInit'
 
 export interface SavedSession {
-  version: 3
+  version: 4
   tree: TreeState
   constraints: ConstraintsState
   hyperparams: HyperparamsState
   packing: PackingState | null
   /** Frontend-only display setting (never sent to the backend); optional so
    * session files exported before this field existed still import cleanly. */
+  clipToSquare?: boolean
+}
+
+/** The pre-sentinel packing shape used by session files exported before the
+ * naive/solved diagnostics split existed — kept only for migration. */
+interface SavedSessionV3 {
+  version: 3
+  tree: TreeState
+  constraints: ConstraintsState
+  hyperparams: HyperparamsState
+  packing: LegacyPacking
   clipToSquare?: boolean
 }
 
@@ -22,12 +34,14 @@ interface LeafConstraintV2 {
   boundary: LeafConstraint['boundary']
 }
 
+type LegacyPacking = { scale: number; positions: Record<string, { x: number; y: number }>; diagnostics: SolveDiagnostics } | null
+
 interface SavedSessionV2 {
   version: 2
   tree: TreeState
   constraints: { symmetryMode: SymmetryMode; perLeaf: Record<string, LeafConstraintV2> }
   hyperparams: HyperparamsState
-  packing: PackingState | null
+  packing: LegacyPacking
   clipToSquare?: boolean
 }
 
@@ -45,7 +59,7 @@ interface SavedSessionV1 {
   tree: TreeState
   constraints: { symmetryMode: SymmetryMode; perLeaf: Record<string, LegacyFlapConstraint> }
   hyperparams: HyperparamsState
-  packing: PackingState | null
+  packing: LegacyPacking
   clipToSquare?: boolean
 }
 
@@ -79,7 +93,7 @@ function migrateSessionV1toV2(v1: SavedSessionV1): SavedSessionV2 {
   }
 }
 
-function migrateSessionV2toV3(v2: SavedSessionV2): SavedSession {
+function migrateSessionV2toV3(v2: SavedSessionV2): SavedSessionV3 {
   const perLeaf: Record<string, LeafConstraint> = {}
   for (const [id, c] of Object.entries(v2.constraints.perLeaf)) {
     perLeaf[id] = { ...c, locked: { kind: 'none' } }
@@ -94,6 +108,35 @@ function migrateSessionV2toV3(v2: SavedSessionV2): SavedSession {
   }
 }
 
+/** Every previously-exported session is, by definition, the product of a
+ * real solve — wraps its packing diagnostics with the `solved` sentinel
+ * (see `types/solve.ts`'s `PackingDiagnostics`), and defensively backfills/
+ * prunes `packing.positions` against the current tree so a hand-edited or
+ * pre-invariant export can't reopen into a stale/mismatched state. */
+function migrateSessionV3toV4(v3: SavedSessionV3): SavedSession {
+  let packing: SavedSession['packing'] = null
+  if (v3.packing) {
+    const treeIds = new Set(Object.keys(v3.tree.nodes))
+    const pruned: Record<string, { x: number; y: number }> = {}
+    for (const [id, p] of Object.entries(v3.packing.positions)) {
+      if (treeIds.has(id)) pruned[id] = p
+    }
+    packing = {
+      scale: v3.packing.scale,
+      positions: backfillMissingPositions(v3.tree, pruned),
+      diagnostics: { kind: 'solved', ...v3.packing.diagnostics },
+    }
+  }
+  return {
+    version: 4,
+    tree: v3.tree,
+    constraints: v3.constraints,
+    hyperparams: v3.hyperparams,
+    packing,
+    clipToSquare: v3.clipToSquare,
+  }
+}
+
 function looksLikeSession(d: Record<string, unknown>): boolean {
   return typeof d.tree === 'object' && typeof d.constraints === 'object' && typeof d.hyperparams === 'object'
 }
@@ -104,8 +147,9 @@ export function parseSavedSession(data: unknown): SavedSession | null {
   if (!data || typeof data !== 'object') return null
   const d = data as Record<string, unknown>
   if (!looksLikeSession(d)) return null
-  if (d.version === 1) return migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1))
-  if (d.version === 2) return migrateSessionV2toV3(d as unknown as SavedSessionV2)
-  if (d.version === 3) return d as unknown as SavedSession
+  if (d.version === 1) return migrateSessionV3toV4(migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1)))
+  if (d.version === 2) return migrateSessionV3toV4(migrateSessionV2toV3(d as unknown as SavedSessionV2))
+  if (d.version === 3) return migrateSessionV3toV4(d as unknown as SavedSessionV3)
+  if (d.version === 4) return d as unknown as SavedSession
   return null
 }

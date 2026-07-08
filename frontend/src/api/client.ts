@@ -9,6 +9,8 @@ export interface SolveOptions {
   initFrom: InitFrom
   currentPositions?: NodePositionOut[]
   currentScale?: number
+  /** Only meaningful with initFrom:'current' — see SolveRequest.seedMultiRestart. */
+  seedMultiRestart?: boolean
 }
 
 export async function fetchSolve(
@@ -27,6 +29,7 @@ export async function fetchSolve(
       initFrom: options.initFrom,
       currentPositions: options.currentPositions,
       currentScale: options.currentScale,
+      seedMultiRestart: options.seedMultiRestart,
     }),
   })
   if (!res.ok) {

@@ -22,9 +22,20 @@ export interface SolveResponse {
   diagnostics: SolveDiagnostics
 }
 
+/** Distinguishes a naive/placeholder packing (built client-side before the
+ * user has ever run a real solve) from the product of an actual backend
+ * solve. Consumed by `hasSolvedOnce`, which in turn gates whether the cheap
+ * naive-scale refresh may touch `packing.scale` and whether the next solve
+ * should seed a multi-restart (see solveActions/solve_service.py). */
+export type PackingDiagnostics = { kind: 'naive' } | ({ kind: 'solved' } & SolveDiagnostics)
+
 export interface PackingState {
   scale: number
   /** Positions for both leaf and internal node ids. */
   positions: Record<string, { x: number; y: number }>
-  diagnostics: SolveDiagnostics
+  diagnostics: PackingDiagnostics
+}
+
+export function hasSolvedOnce(packing: PackingState | null): boolean {
+  return packing?.diagnostics.kind === 'solved'
 }

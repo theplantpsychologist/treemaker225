@@ -14,10 +14,27 @@ function regularNgonBases(n: number, angleOffset = 0): [number, number][] {
 /** Preserved as the exact geometry the original octagon-only implementation used. */
 export const OCT_BASES: [number, number][] = regularNgonBases(8)
 
-export const SHAPE_BASES: Record<Exclude<ShapeKind, 'circle' | 'hexagon'>, [number, number][]> = {
-  square: regularNgonBases(4),
+export const SHAPE_BASES: Record<Exclude<ShapeKind, 'circle' | 'hexagon' | 'square'>, [number, number][]> = {
   octagon: OCT_BASES,
   dodecagon: regularNgonBases(12),
+}
+
+/** Square's angle offset is computed on demand, mirroring hexagon's pattern
+ * — unlike hexagon (whose diagonal-symmetry 45° is unconditional), square's
+ * 45° rotation is purely the manual `extraRotation` toggle; any "default to
+ * rotated when diagonal symmetry is active" behavior lives at the call site
+ * (`state/store.ts`) as a one-time default, not baked into this function.
+ * Cached per offset (only 2 combinations exist) for the same referential-
+ * stability reason `hexagonBases` is cached. */
+const squareBasesCache = new Map<number, [number, number][]>()
+function squareBases(extraRotation: boolean): [number, number][] {
+  const offset = extraRotation ? Math.PI / 4 : 0
+  let cached = squareBasesCache.get(offset)
+  if (!cached) {
+    cached = regularNgonBases(4, offset)
+    squareBasesCache.set(offset, cached)
+  }
+  return cached
 }
 
 /** Hexagon's angle offset is computed on demand rather than read from a
@@ -45,7 +62,9 @@ function hexagonBases(symmetryMode: SymmetryMode, extraRotation: boolean): [numb
 
 /** The separating-axis bases for `shape`, or null for 'circle' — the
  * degenerate case with no discrete bases (plain Euclidean distance).
- * `symmetryMode`/`extraRotation` only affect hexagon (see `hexagonBases`). */
+ * `symmetryMode` only affects hexagon; `extraRotation` is whichever shape's
+ * own rotation toggle is active for the current `shape` (callers compute
+ * this — see `hexagonBases`/`squareBases`). */
 export function getBases(
   shape: ShapeKind,
   symmetryMode: SymmetryMode = 'none',
@@ -53,6 +72,7 @@ export function getBases(
 ): [number, number][] | null {
   if (shape === 'circle') return null
   if (shape === 'hexagon') return hexagonBases(symmetryMode, extraRotation)
+  if (shape === 'square') return squareBases(extraRotation)
   return SHAPE_BASES[shape]
 }
 
@@ -74,8 +94,9 @@ const CIRCLE_SEGMENTS = 48
 
 /** Vertices of `shape` centered at (cx, cy) whose apothem (or radius, for a
  * circle) equals `radius`. `symmetryMode`/`extraRotation` only affect
- * hexagon (see `hexagonBases`) — pass the live values so a rendered
- * hexagon's orientation always matches what the solver actually used. */
+ * hexagon/square (see `hexagonBases`/`squareBases`) — pass the live values
+ * so a rendered hexagon/square's orientation always matches what the solver
+ * actually used. */
 export function buildShapePoints(
   shape: ShapeKind,
   cx: number,

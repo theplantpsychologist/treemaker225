@@ -17,10 +17,19 @@ def regular_ngon_bases(n: int, angle_offset: float = 0.0) -> ShapeBases:
 OCT_BASES: ShapeBases = regular_ngon_bases(8)
 
 SHAPE_BASES: Dict[str, ShapeBases] = {
-    "square": regular_ngon_bases(4),
     "octagon": OCT_BASES,
     "dodecagon": regular_ngon_bases(12),
 }
+
+
+def _square_bases(extra_rotation: bool) -> ShapeBases:
+    """Square's angle offset is computed on demand, mirroring the hexagon
+    pattern -- unlike hexagon's unconditional diagonal-symmetry rotation,
+    square's 45-degree rotation is purely the manual extra_rotation toggle;
+    any "default to rotated when diagonal symmetry is active" behavior lives
+    at the frontend store's call site, not here."""
+    offset = math.pi / 4 if extra_rotation else 0.0
+    return regular_ngon_bases(4, offset)
 
 
 def _hexagon_bases(symmetry_mode: str, extra_rotation: bool) -> ShapeBases:
@@ -42,10 +51,13 @@ def get_bases(shape: str, symmetry_mode: str = "none", extra_rotation: bool = Fa
     """The separating-axis bases for `shape`, or None for 'circle' — the
     degenerate case with no discrete bases, handled via exact Euclidean
     distance instead (the alpha -> infinity, infinite-basis limit).
-    `symmetry_mode`/`extra_rotation` only affect hexagon (see
-    `_hexagon_bases`)."""
+    `symmetry_mode` only affects hexagon; `extra_rotation` is whichever
+    shape's own rotation toggle is active for the current `shape` (callers
+    compute this -- see `_hexagon_bases`/`_square_bases`)."""
     if shape == "circle":
         return None
     if shape == "hexagon":
         return _hexagon_bases(symmetry_mode, extra_rotation)
+    if shape == "square":
+        return _square_bases(extra_rotation)
     return SHAPE_BASES[shape]

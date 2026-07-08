@@ -25,6 +25,13 @@ class SolveRequest(CamelModel):
     init_from: InitFrom = InitFrom.RANDOM
     current_positions: Optional[List[NodePositionOut]] = None
     current_scale: Optional[float] = None
+    # Only meaningful with init_from=CURRENT: run hp.n_restarts restarts,
+    # each perturbing current_positions by an increasing noise amount
+    # (restart 0 is always the exact, unperturbed seed), instead of a single
+    # deterministic restart. Used for the very first real solve after the
+    # frontend's naive pre-solve preview, so the solver isn't starting from
+    # scratch but still explores multiple candidate solutions.
+    seed_multi_restart: bool = False
 
 
 class SolveDiagnostics(CamelModel):

@@ -10,6 +10,7 @@ import pinEdgeIcon from '../../assets/pin_edge.svg'
 import pinCornerIcon from '../../assets/pin_corner.svg'
 import lockIcon from '../../assets/lock.svg'
 import clearIcon from '../../assets/clear.svg'
+import trashIcon from '../../assets/trash.svg'
 import './Inspector.css'
 
 function symmetryLabel(constraint: LeafConstraint) {
@@ -86,6 +87,7 @@ export function Inspector() {
   const moveFlap = useAppStore((s) => s.moveFlap)
   const setLockedPosition = useAppStore((s) => s.setLockedPosition)
   const selectEdge = useAppStore((s) => s.selectEdge)
+  const deleteNodeById = useAppStore((s) => s.deleteNodeById)
 
   const errorBanner = constraintError ? (
     <div className="inspector-panel inspector-panel-error" key="error">
@@ -142,7 +144,15 @@ export function Inspector() {
       <div className="inspector-panel">
         <div className="inspector-panel-header">
           <span className="inspector-label">flap: {selectedEdgeId.slice(0, 6)}</span>
-          <IconButton icon={clearIcon} label="Deselect" onClick={() => selectEdge(null)} />
+          <div className="inspector-group-buttons">
+            <IconButton
+              icon={trashIcon}
+              label="Delete flap"
+              className="danger"
+              onClick={() => deleteNodeById(selectedEdgeId)}
+            />
+            <IconButton icon={clearIcon} label="Deselect" onClick={() => selectEdge(null)} />
+          </div>
         </div>
 
         <div className="inspector-group">

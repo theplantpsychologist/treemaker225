@@ -28,6 +28,16 @@
   cursor: not-allowed;
 }
 
+.icon-button.danger {
+  color: var(--color-delete);
+  border-color: var(--color-delete);
+}
+
+.icon-button.danger:hover:not(:disabled) {
+  background: var(--color-delete);
+  color: white;
+}
+
 .icon-button-glyph {
   display: block;
   width: 1.05rem;
