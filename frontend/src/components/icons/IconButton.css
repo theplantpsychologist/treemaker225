@@ -1,0 +1,44 @@
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: #f3f4f6;
+  color: #1f2937;
+}
+
+.icon-button.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.icon-button-glyph {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
+  background-color: currentColor;
+  mask-image: var(--icon-src);
+  -webkit-mask-image: var(--icon-src);
+  mask-size: contain;
+  -webkit-mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-position: center;
+}

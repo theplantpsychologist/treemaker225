@@ -1,11 +1,25 @@
 .packing-editor-wrapper {
   position: relative;
+  z-index: 0;
   width: 100%;
   height: 100%;
   display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: #fafafa;
+  /* Hard backstop: flaps/handles may spill past the paper square inside the
+     canvas (see .packing-editor-canvas's own overflow:visible), but must
+     never spill past this wrapper into the toolbar, divider, or tree pane. */
+  overflow: hidden;
+}
+
+.packing-editor-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
   align-items: center;
   justify-content: center;
-  background: #fafafa;
   padding: 1rem;
   container-type: size;
 }
@@ -25,67 +39,68 @@
 .packing-square {
   fill: white;
   stroke: #d1d5db;
-  stroke-width: 2;
+  stroke-width: var(--sw-regular);
 }
 
 .packing-flap {
   fill: rgba(37, 99, 235, 0.12);
   stroke: #2563eb;
-  stroke-width: 1.5;
+  stroke-width: var(--sw-thin);
   cursor: grab;
   touch-action: none;
 }
 
 .packing-flap.selected {
-  stroke-width: 3;
+  stroke-width: var(--sw-selected);
 }
 
 .symmetry-line {
   stroke: #17a2b8;
-  stroke-width: 1.5;
-  stroke-dasharray: 6 4;
+  stroke-width: var(--sw-thin);
+  stroke-dasharray: var(--dash-symmetry);
   pointer-events: none;
 }
 
 .pin-handle {
-  fill: white;
-  stroke: #6b7280;
-  stroke-width: 1.5;
+  stroke-width: var(--sw-thin);
   cursor: pointer;
 }
 
-.pin-handle:hover {
-  fill: #f3f4f6;
+.pin-handle-corner.occupied {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.pin-handle:not(.occupied):hover {
+  opacity: 0.75;
 }
 
 .packing-river {
-  fill: rgba(180, 83, 9, 0.15);
-  stroke: #b45309;
-  stroke-width: 1;
+  /* Fill/stroke come from COLOR_UNCONSTRAINED via inline style (see
+     PackingEditorCanvas) so rivers always match the "unconstrained" flap
+     color exactly, not just visually. */
+  stroke-width: var(--sw-hairline);
   cursor: grab;
   touch-action: none;
 }
 
 .packing-river.selected {
-  stroke-width: 2.5;
-}
-
-.river-handle {
-  fill: white;
-  stroke-width: 1.5;
+  stroke-width: var(--sw-thick);
   cursor: nwse-resize;
-  touch-action: none;
-  stroke: #b45309;
 }
 
 .packing-flap.selected {
   cursor: nwse-resize;
 }
 
-.overlap-line {
-  stroke: #dc2626;
-  stroke-width: 2;
-  stroke-dasharray: 4 3;
+.center-dot {
+  fill: #1f2937;
+  pointer-events: none;
+}
+
+.overlap-area {
+  /* Fill comes from COLOR_OVERLAP via inline style (see
+     PackingEditorCanvas) — a small overlap renders as a small red area. */
   pointer-events: none;
 }
 

@@ -7,6 +7,11 @@
   font-size: 0.8rem;
 }
 
+.symmetry-mode-selector {
+  display: flex;
+  gap: 0.3rem;
+}
+
 .hp-field {
   display: flex;
   align-items: center;

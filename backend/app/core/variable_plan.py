@@ -3,37 +3,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from app.schemas.constraints import Constraints, SymmetryMode
-
-
-def reflect_across_symmetry(pos: Tuple[float, float], mode: SymmetryMode) -> Tuple[float, float]:
-    x, y = pos
-    if mode == SymmetryMode.BOOK:
-        return (1.0 - x, y)
-    if mode == SymmetryMode.DIAGONAL:
-        return (y, x)
-    raise ValueError(f"cannot reflect a pair without a symmetry mode (got {mode})")
-
-
-def edge_position(edge: str, s: float) -> Tuple[float, float]:
-    if edge == "left":
-        return (0.0, s)
-    if edge == "right":
-        return (1.0, s)
-    if edge == "top":
-        return (s, 0.0)
-    if edge == "bottom":
-        return (s, 1.0)
-    raise ValueError(f"unknown edge {edge}")
-
-
-def corner_position(corner: str) -> Tuple[float, float]:
-    return {
-        "top_left": (0.0, 0.0),
-        "top_right": (1.0, 0.0),
-        "bottom_left": (0.0, 1.0),
-        "bottom_right": (1.0, 1.0),
-    }[corner]
+from app.core.constraint_resolution import (
+    corner_position,
+    edge_position,
+    reflect_across_symmetry,
+    resolve_leaf_constraint,
+)
+from app.schemas.constraints import Constraints, LeafConstraint, SymmetryMode
 
 
 @dataclass
@@ -42,8 +18,26 @@ class LeafVarSpec:
     var_start: int
     n_vars: int
     edge: Optional[str] = None
-    corner: Optional[str] = None
+    fixed_point: Optional[Tuple[float, float]] = None
     paired_with: Optional[str] = None
+
+
+def _own_spec(leaf_id: str, constraint: LeafConstraint, mode: SymmetryMode, var_start: int) -> LeafVarSpec:
+    """A leaf's degrees of freedom from its OWN symmetry+boundary combo,
+    ignoring pairing (a pair leader still resolves via this — `pin_symmetry`
+    and `pair` are mutually exclusive values of the same slot, so a pair
+    member's own resolution only ever depends on its boundary slot)."""
+    boundary = constraint.boundary
+    if boundary.kind == "pin_corner":
+        return LeafVarSpec("corner_fixed", var_start, 0, fixed_point=corner_position(boundary.corner))
+    if boundary.kind == "pin_edge":
+        if constraint.symmetry.kind == "pin_symmetry":
+            point = resolve_leaf_constraint(mode, constraint).point
+            return LeafVarSpec("resolved_fixed", var_start, 0, fixed_point=point)
+        return LeafVarSpec("edge_free", var_start, 1, edge=boundary.edge)
+    if constraint.symmetry.kind == "pin_symmetry":
+        return LeafVarSpec("symmetry_free", var_start, 1)
+    return LeafVarSpec("free", var_start, 2)
 
 
 class VariablePlan:
@@ -57,27 +51,39 @@ class VariablePlan:
         self.specs: Dict[str, LeafVarSpec] = {}
 
         idx = 0
+        pair_seen: set = set()
         for leaf_id in leaf_ids:
+            if leaf_id in self.specs:
+                continue
             c = constraints.per_leaf.get(leaf_id)
-            kind = c.kind if c else "none"
-            if kind == "pin_symmetry":
-                self.specs[leaf_id] = LeafVarSpec("symmetry_free", idx, 1)
-                idx += 1
-            elif kind == "pair":
-                partner = c.paired_with
-                if leaf_id < partner:
-                    self.specs[leaf_id] = LeafVarSpec("pair_primary", idx, 2, paired_with=partner)
-                    idx += 2
+            constraint = c if c is not None else LeafConstraint()
+
+            if constraint.symmetry.kind == "pair" and leaf_id not in pair_seen:
+                partner = constraint.symmetry.paired_with
+                partner_c = constraints.per_leaf.get(partner) or LeafConstraint()
+                pair_seen.add(leaf_id)
+                pair_seen.add(partner)
+                # Whichever side actually carries a boundary pin (if either)
+                # must be the leader — validation upstream guarantees at
+                # most one side does. With neither pinned, fall back to a
+                # stable lexicographic tie-break.
+                if constraint.boundary.kind != "none":
+                    leader_id, follower_id = leaf_id, partner
+                elif partner_c.boundary.kind != "none":
+                    leader_id, follower_id = partner, leaf_id
                 else:
-                    self.specs[leaf_id] = LeafVarSpec("pair_secondary", 0, 0, paired_with=partner)
-            elif kind == "pin_edge":
-                self.specs[leaf_id] = LeafVarSpec("edge_free", idx, 1, edge=c.edge)
-                idx += 1
-            elif kind == "pin_corner":
-                self.specs[leaf_id] = LeafVarSpec("corner_fixed", 0, 0, corner=c.corner)
-            else:
-                self.specs[leaf_id] = LeafVarSpec("free", idx, 2)
-                idx += 2
+                    leader_id, follower_id = (leaf_id, partner) if leaf_id < partner else (partner, leaf_id)
+
+                leader_constraint = constraint if leader_id == leaf_id else partner_c
+                leader_spec = _own_spec(leader_id, leader_constraint, self.symmetry_mode, idx)
+                self.specs[leader_id] = leader_spec
+                idx += leader_spec.n_vars
+                self.specs[follower_id] = LeafVarSpec("pair_secondary", 0, 0, paired_with=leader_id)
+                continue
+
+            spec = _own_spec(leaf_id, constraint, self.symmetry_mode, idx)
+            self.specs[leaf_id] = spec
+            idx += spec.n_vars
 
         self.n_position_vars = idx
         self.total_dim = idx + 1
@@ -94,15 +100,15 @@ class VariablePlan:
         positions: Dict[str, Tuple[float, float]] = {}
         for leaf_id in self.leaf_ids:
             spec = self.specs[leaf_id]
-            if spec.kind in ("free", "pair_primary"):
+            if spec.kind == "free":
                 positions[leaf_id] = (float(x[spec.var_start]), float(x[spec.var_start + 1]))
             elif spec.kind == "symmetry_free":
                 t = float(x[spec.var_start])
                 positions[leaf_id] = (0.5, t) if self.symmetry_mode == SymmetryMode.BOOK else (t, t)
             elif spec.kind == "edge_free":
                 positions[leaf_id] = edge_position(spec.edge, float(x[spec.var_start]))
-            elif spec.kind == "corner_fixed":
-                positions[leaf_id] = corner_position(spec.corner)
+            elif spec.kind in ("corner_fixed", "resolved_fixed"):
+                positions[leaf_id] = spec.fixed_point
         for leaf_id in self.leaf_ids:
             spec = self.specs[leaf_id]
             if spec.kind == "pair_secondary":
@@ -123,7 +129,7 @@ class VariablePlan:
         for leaf_id in self.leaf_ids:
             spec = self.specs[leaf_id]
             px, py = positions[leaf_id]
-            if spec.kind in ("free", "pair_primary"):
+            if spec.kind == "free":
                 x[spec.var_start] = px
                 x[spec.var_start + 1] = py
             elif spec.kind == "symmetry_free":

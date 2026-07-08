@@ -3,13 +3,27 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
 import { buildShapePoints } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
-import { findAllOverlaps } from '../../geometry/overlap'
-import { colorForConstraint } from '../../constants/constraintColors'
+import { computeOverlapAreas } from '../../geometry/overlap'
+import {
+  COLOR_CORNER,
+  COLOR_EDGE,
+  COLOR_OVERLAP,
+  COLOR_UNCONSTRAINED,
+  colorForConstraint,
+} from '../../constants/constraintColors'
 import { isPackingStale } from '../../geometry/topology'
+import { isPointOccupied } from '../../geometry/constraintResolution'
+import { cornerPosition } from '../../geometry/edgePin'
 import type { CornerId, EdgeSide } from '../../types/constraints'
 import { Inspector } from './Inspector'
+import { SolvingOverlay } from './SolvingOverlay'
 import { usePackingEditorInteraction, VIEW_SIZE } from './usePackingEditorInteraction'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
+import {
+  CENTER_DOT_RADIUS_PX,
+  CORNER_PIN_HANDLE_SIZE_PX,
+  EDGE_PIN_HANDLE_THICKNESS_PX,
+} from '../../constants/sizeTokens'
 import './PackingEditor.css'
 
 function toPointsAttr(points: [number, number][], scale: number): string {
@@ -30,28 +44,32 @@ interface RiverInfo {
   p1: { x: number; y: number }
   p2: { x: number; y: number }
   pathD: string
-  handle: { x: number; y: number }
 }
 
-const EDGE_HANDLES: { edge: EdgeSide; x: number; y: number }[] = [
-  { edge: 'top', x: 0.5, y: 0 },
-  { edge: 'bottom', x: 0.5, y: 1 },
-  { edge: 'left', x: 0, y: 0.5 },
-  { edge: 'right', x: 1, y: 0.5 },
-]
+const EDGE_SIDES: EdgeSide[] = ['top', 'bottom', 'left', 'right']
+const CORNER_IDS: CornerId[] = ['top_left', 'top_right', 'bottom_left', 'bottom_right']
 
-const CORNER_HANDLES: { corner: CornerId; x: number; y: number }[] = [
-  { corner: 'top_left', x: 0, y: 0 },
-  { corner: 'top_right', x: 1, y: 0 },
-  { corner: 'bottom_left', x: 0, y: 1 },
-  { corner: 'bottom_right', x: 1, y: 1 },
-]
+/** A clickable band spanning the entire paper edge, in VIEW_SIZE-scaled
+ * coordinates — easier to hit than a small midpoint marker. */
+function edgeHandleRect(edge: EdgeSide, thickness: number) {
+  switch (edge) {
+    case 'top':
+      return { x: 0, y: 0, width: VIEW_SIZE, height: thickness }
+    case 'bottom':
+      return { x: 0, y: VIEW_SIZE - thickness, width: VIEW_SIZE, height: thickness }
+    case 'left':
+      return { x: 0, y: 0, width: thickness, height: VIEW_SIZE }
+    case 'right':
+      return { x: VIEW_SIZE - thickness, y: 0, width: thickness, height: VIEW_SIZE }
+  }
+}
 
 export function PackingEditorCanvas() {
   const svgRef = useRef<SVGSVGElement>(null)
   const tree = useAppStore((s) => s.tree)
   const packing = useAppStore((s) => s.packing)
   const shape = useAppStore((s) => s.hyperparams.shape)
+  const clipToSquare = useAppStore((s) => s.clipToSquare)
   const constraints = useAppStore((s) => s.constraints)
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
   const selectEdge = useAppStore((s) => s.selectEdge)
@@ -59,9 +77,10 @@ export function PackingEditorCanvas() {
   const cancelPinTarget = useAppStore((s) => s.cancelPinTarget)
   const pinToEdge = useAppStore((s) => s.pinToEdge)
   const pinToCorner = useAppStore((s) => s.pinToCorner)
-  const { beginFlapPointerDown, beginResizeRiver, onPointerMove, onPointerUp } =
-    usePackingEditorInteraction(svgRef)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
+  const unitsPerPixel = pan.pxToWorld / VIEW_SIZE
+  const { beginFlapPointerDown, beginResizeRiver, onPointerMove, onPointerUp } =
+    usePackingEditorInteraction(svgRef, unitsPerPixel)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -121,35 +140,28 @@ export function PackingEditorCanvas() {
       } else {
         const pathD = pathByNodeId.get(node.id)
         if (pathD == null) continue
-        const dx = childPos.x - parentPos.x
-        const dy = childPos.y - parentPos.y
-        const len = Math.hypot(dx, dy) || 1e-9
-        const nx = -dy / len
-        const ny = dx / len
-        const mx = (parentPos.x + childPos.x) / 2
-        const my = (parentPos.y + childPos.y) / 2
         riverList.push({
           key: node.id,
           nodeId: node.id,
           p1: parentPos,
           p2: childPos,
           pathD,
-          handle: { x: mx + (nx * width) / 2, y: my + (ny * width) / 2 },
         })
       }
     }
     return { flaps: flapList, rivers: riverList }
   }, [tree, packing, constraints, shape])
 
-  const overlaps = useMemo(() => {
+  const overlapAreas = useMemo(() => {
     if (!packing) return []
-    return findAllOverlaps(tree, packing.positions, packing.scale, shape)
+    return computeOverlapAreas(tree, packing.positions, packing.scale, shape)
   }, [tree, packing, shape])
 
   const stale = useMemo(() => isPackingStale(tree, packing), [tree, packing])
 
   return (
     <div className="packing-editor-wrapper">
+      <div className="packing-editor-stage">
       <svg
         ref={svgRef}
         className={'packing-editor-canvas' + (stale ? ' stale' : '')}
@@ -158,6 +170,11 @@ export function PackingEditorCanvas() {
         onPointerUp={onSvgPointerUp}
         onPointerLeave={onSvgPointerUp}
       >
+        <defs>
+          <clipPath id="packing-square-clip">
+            <rect x={0} y={0} width={VIEW_SIZE} height={VIEW_SIZE} />
+          </clipPath>
+        </defs>
         <rect
           className="packing-editor-backdrop"
           x={pan.viewBox.x}
@@ -182,78 +199,85 @@ export function PackingEditorCanvas() {
           <line className="symmetry-line" x1={0} y1={0} x2={VIEW_SIZE} y2={VIEW_SIZE} />
         )}
 
-        {rivers.map((r) => (
-          <g key={`river-${r.key}`}>
-            <path
-              className={'packing-river' + (r.key === selectedEdgeId ? ' selected' : '')}
-              fillRule="evenodd"
-              d={r.pathD}
-              onPointerDown={(e) => beginResizeRiver(r.nodeId, r.p1, r.p2, e)}
-            />
-            <circle
-              className="river-handle"
-              cx={r.handle.x * VIEW_SIZE}
-              cy={r.handle.y * VIEW_SIZE}
-              r={5}
-              onPointerDown={(e) => beginResizeRiver(r.nodeId, r.p1, r.p2, e)}
-            />
-          </g>
-        ))}
+        <g clipPath={clipToSquare ? 'url(#packing-square-clip)' : undefined}>
+          {rivers.map((r) => (
+            <g key={`river-${r.key}`}>
+              <path
+                className={'packing-river' + (r.key === selectedEdgeId ? ' selected' : '')}
+                style={{ fill: `${COLOR_UNCONSTRAINED}33`, stroke: COLOR_UNCONSTRAINED }}
+                fillRule="evenodd"
+                d={r.pathD}
+                onPointerDown={(e) => beginResizeRiver(r.nodeId, r.p1, r.p2, r.key === selectedEdgeId, e)}
+              />
+            </g>
+          ))}
 
-        {flaps.map((f) => (
-          <g key={`flap-${f.key}`}>
-            <polygon
-              className={'packing-flap' + (f.key === selectedEdgeId ? ' selected' : '')}
-              style={{ stroke: f.color, fill: `${f.color}26` }}
-              points={f.points}
-              onPointerDown={(e) => beginFlapPointerDown(f.key, f.center, f.radius, f.key === selectedEdgeId, e)}
+          {flaps.map((f) => (
+            <g key={`flap-${f.key}`}>
+              <polygon
+                className={'packing-flap' + (f.key === selectedEdgeId ? ' selected' : '')}
+                style={{ stroke: f.color, fill: `${f.color}26` }}
+                points={f.points}
+                onPointerDown={(e) => beginFlapPointerDown(f.key, f.center, f.radius, f.key === selectedEdgeId, e)}
+              />
+              <circle
+                className="center-dot"
+                cx={f.center.x * VIEW_SIZE}
+                cy={f.center.y * VIEW_SIZE}
+                r={CENTER_DOT_RADIUS_PX * pan.pxToWorld}
+              />
+            </g>
+          ))}
+
+          {overlapAreas.map(({ a, b, rings }) => (
+            <path
+              key={`overlap-${a}-${b}`}
+              className="overlap-area"
+              style={{ fill: `${COLOR_OVERLAP}99` }}
+              fillRule="evenodd"
+              d={ringsToPathD(rings, VIEW_SIZE)}
             />
-          </g>
-        ))}
+          ))}
+        </g>
 
         {selectedEdgeId &&
           pinTargetMode === 'edge' &&
-          EDGE_HANDLES.map((h) => (
-            <rect
-              key={`edge-handle-${h.edge}`}
-              className="pin-handle"
-              x={h.x * VIEW_SIZE - 6}
-              y={h.y * VIEW_SIZE - 6}
-              width={12}
-              height={12}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => pinToEdge(selectedEdgeId, h.edge)}
-            />
-          ))}
+          EDGE_SIDES.map((edge) => {
+            const thickness = EDGE_PIN_HANDLE_THICKNESS_PX * pan.pxToWorld
+            const rect = edgeHandleRect(edge, thickness)
+            return (
+              <rect
+                key={`edge-handle-${edge}`}
+                className="pin-handle pin-handle-edge"
+                style={{ fill: `${COLOR_EDGE}55`, stroke: COLOR_EDGE }}
+                x={rect.x}
+                y={rect.y}
+                width={rect.width}
+                height={rect.height}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => pinToEdge(selectedEdgeId, edge)}
+              />
+            )
+          })}
 
         {selectedEdgeId &&
           pinTargetMode === 'corner' &&
-          CORNER_HANDLES.map((h) => (
-            <rect
-              key={`corner-handle-${h.corner}`}
-              className="pin-handle pin-handle-corner"
-              x={h.x * VIEW_SIZE - 7}
-              y={h.y * VIEW_SIZE - 7}
-              width={14}
-              height={14}
-              transform={`rotate(45 ${h.x * VIEW_SIZE} ${h.y * VIEW_SIZE})`}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => pinToCorner(selectedEdgeId, h.corner)}
-            />
-          ))}
-
-        {packing &&
-          overlaps.map(({ a, b }) => {
-            const pa = packing.positions[a]
-            const pb = packing.positions[b]
+          CORNER_IDS.map((corner) => {
+            const size = CORNER_PIN_HANDLE_SIZE_PX * pan.pxToWorld
+            const p = cornerPosition(corner)
+            const occupied = isPointOccupied(tree, constraints, p, selectedEdgeId)
             return (
-              <line
-                key={`overlap-${a}-${b}`}
-                className="overlap-line"
-                x1={pa.x * VIEW_SIZE}
-                y1={pa.y * VIEW_SIZE}
-                x2={pb.x * VIEW_SIZE}
-                y2={pb.y * VIEW_SIZE}
+              <rect
+                key={`corner-handle-${corner}`}
+                className={'pin-handle pin-handle-corner' + (occupied ? ' occupied' : '')}
+                style={{ fill: occupied ? '#e5e7eb' : `${COLOR_CORNER}33`, stroke: occupied ? '#9ca3af' : COLOR_CORNER }}
+                x={p.x * VIEW_SIZE - size / 2}
+                y={p.y * VIEW_SIZE - size / 2}
+                width={size}
+                height={size}
+                transform={`rotate(45 ${p.x * VIEW_SIZE} ${p.y * VIEW_SIZE})`}
+                onPointerDown={(e) => (occupied ? undefined : e.stopPropagation())}
+                onClick={() => (occupied ? undefined : pinToCorner(selectedEdgeId, corner))}
               />
             )
           })}
@@ -261,6 +285,8 @@ export function PackingEditorCanvas() {
       {packing && <div className="scale-badge">scale: {packing.scale.toFixed(4)}</div>}
       {!packing && <div className="packing-empty-hint">Run the solver to see the packing</div>}
       {stale && <div className="stale-banner">Tree changed — re-run the solver to update the packing</div>}
+      <SolvingOverlay />
+      </div>
       <Inspector />
     </div>
   )

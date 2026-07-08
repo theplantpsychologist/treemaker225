@@ -51,6 +51,14 @@ constrained nonlinear solver on the other. See
 - **Save/load**: export/import the full session (tree, constraints,
   hyperparameters, packing) as a JSON file.
 
+## Styling organization
+
+Hard-coded visual styling lives in exactly three places, never inline or scattered across component CSS as a one-off number:
+
+- **Colors** — `frontend/src/constants/constraintColors.ts`. Every constraint/overlap color (unconstrained gray, symmetry teal, per-pair hue, edge amber, corner indigo, overlap red) is exported from here and consumed by both canvases plus the legend, so a palette change happens in one file.
+- **Stroke widths & dash patterns** — `frontend/src/styles/tokens.css`. CSS custom properties (`--sw-hairline` / `--sw-thin` / `--sw-regular` / `--sw-thick` / `--sw-selected`, `--dash-symmetry`) consumed via `var(--sw-*)` in component stylesheets instead of hardcoded numbers. This file also applies `vector-effect: non-scaling-stroke` to every stroked shape, which keeps stroke width a constant number of *screen* pixels regardless of the current pan/zoom level.
+- **Zoom-invariant pixel sizes** — `frontend/src/constants/sizeTokens.ts`. Radii and hit-test tolerances (tree node size, pin/corner handle size, center-dot radius, edge-resize grab tolerance) have no CSS equivalent to `non-scaling-stroke`, so they're defined here as plain screen-pixel constants and converted to world-space units at render time via `useViewBoxPanZoom`'s `pxToWorld`.
+
 ## Structure
 
 - `backend/` — FastAPI service that runs the scipy-based packing solver.

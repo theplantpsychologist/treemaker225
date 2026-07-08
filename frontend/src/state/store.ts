@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { API_BASE, fetchSolve } from '../api/client'
-import type { ConstraintsState, CornerId, EdgeSide, SymmetryMode } from '../types/constraints'
-import { DEFAULT_CONSTRAINTS } from '../types/constraints'
+import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from '../types/constraints'
+import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
 import { DEFAULT_HYPERPARAMS } from '../types/hyperparams'
 import type { PackingState } from '../types/solve'
@@ -9,13 +9,21 @@ import { toTreeIn } from '../types/tree'
 import type { TreeState } from '../types/tree'
 import { getLeaves } from '../geometry/treeGeometry'
 import {
+  collectResolvedPoints,
+  findAnyCollision,
+  findPointCollision,
+  resolveLeafConstraint,
+} from '../geometry/constraintResolution'
+import {
   addChildNode,
   createRootNode,
+  deleteNode as deleteNodeAction,
   dragNodeTo,
   setEdgeLength as setEdgeLengthAction,
 } from './actions/treeActions'
 import {
-  withClearedConstraint,
+  withClearedBoundary,
+  withClearedSymmetry,
   withPair,
   withPinCorner,
   withPinEdge,
@@ -24,7 +32,7 @@ import {
 } from './actions/constraintActions'
 import { moveFlapPositions } from './actions/packingActions'
 import type { SavedSession } from '../types/session'
-import { isSavedSession } from '../types/session'
+import { parseSavedSession } from '../types/session'
 import { downloadJson } from '../utils/download'
 import type { HistorySnapshot } from './history'
 import { HISTORY_LIMIT, snapshot } from './history'
@@ -38,10 +46,12 @@ interface AppState {
   pinTargetMode: 'edge' | 'corner' | null
   constraintError: string | null
   hyperparams: HyperparamsState
+  clipToSquare: boolean
   packing: PackingState | null
   lastSolvedScale: number | null
   solving: boolean
   solveError: string | null
+  uiError: string | null
   undoStack: HistorySnapshot[]
   redoStack: HistorySnapshot[]
 
@@ -54,6 +64,7 @@ interface AppState {
   clearSelection: () => void
   createRootAt: (x: number, y: number) => void
   addChildAt: (parentId: string, x: number, y: number) => void
+  deleteActiveNode: () => void
   moveNode: (id: string, x: number, y: number) => void
   setEdgeLength: (id: string, length: number) => void
   syncPairedLength: (id: string) => void
@@ -68,13 +79,16 @@ interface AppState {
   pinToSymmetry: (leafId: string) => void
   pinToEdge: (leafId: string, edge: EdgeSide) => void
   pinToCorner: (leafId: string, corner: CornerId) => void
-  clearConstraint: (leafId: string) => void
+  clearSymmetryConstraint: (leafId: string) => void
+  clearBoundaryConstraint: (leafId: string) => void
   clearConstraintError: () => void
   moveFlap: (id: string, x: number, y: number) => void
   snapFlap: (id: string) => void
   setPackingScale: (scale: number) => void
 
   setHyperparams: (hyperparams: Partial<HyperparamsState>) => void
+  setClipToSquare: (value: boolean) => void
+  clearUiError: () => void
   runSolve: () => Promise<void>
 
   exportSession: () => void
@@ -90,10 +104,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinTargetMode: null,
   constraintError: null,
   hyperparams: DEFAULT_HYPERPARAMS,
+  clipToSquare: true,
   packing: null,
   lastSolvedScale: null,
   solving: false,
   solveError: null,
+  uiError: null,
   undoStack: [],
   redoStack: [],
 
@@ -180,6 +196,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ tree })
   },
 
+  deleteActiveNode: () => {
+    const state = get()
+    const id = state.activeParentId
+    if (!id) return
+    const result = deleteNodeAction(state.tree, id)
+    if (!result) {
+      set({ uiError: "Can't delete a branch node — delete its children first." })
+      return
+    }
+    get().pushUndoSnapshot()
+    // Only leaves ever carry a constraint, but this is harmless (a no-op
+    // delete) for a removed branch/root/degree-2 id too.
+    const perLeaf = { ...state.constraints.perLeaf }
+    for (const [leafId, c] of Object.entries(perLeaf)) {
+      if (c.symmetry.kind === 'pair' && c.symmetry.pairedWith === result.deletedId) {
+        perLeaf[leafId] = { ...c, symmetry: { kind: 'none' } }
+      }
+    }
+    delete perLeaf[result.deletedId]
+    set({
+      tree: result.tree,
+      constraints: { ...state.constraints, perLeaf },
+      activeParentId: null,
+      selectedEdgeId: null,
+      uiError: null,
+    })
+  },
+
   moveNode: (id, x, y) => {
     set({ tree: dragNodeTo(get().tree, id, x, y) })
     get().syncPairedLength(id)
@@ -193,8 +237,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   syncPairedLength: (id) => {
     const state = get()
     const c = state.constraints.perLeaf[id]
-    if (c?.kind !== 'pair') return
-    const partner = c.pairedWith
+    if (c?.symmetry.kind !== 'pair') return
+    const partner = c.symmetry.pairedWith
     const a = state.tree.nodes[id]?.length
     const b = state.tree.nodes[partner]?.length
     if (a == null || b == null || Math.abs(a - b) < 1e-9) return
@@ -208,7 +252,27 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSymmetryMode: (mode) => {
     get().pushUndoSnapshot()
-    set({ constraints: withSymmetryMode(get().constraints, mode), pairingSourceId: null })
+    let constraints = withSymmetryMode(get().constraints, mode)
+    // Some existing symmetry+boundary combos (book+left/right; a pin_corner
+    // that no longer lies on the new symmetry line) become infeasible under
+    // the new mode — clear just the boundary half of each, gracefully,
+    // rather than leaving the constraints state in a contradictory shape.
+    const clearedLeafIds: string[] = []
+    for (const [leafId, c] of Object.entries(constraints.perLeaf)) {
+      if (!resolveLeafConstraint(mode, c).feasible) {
+        constraints = withClearedBoundary(constraints, leafId)
+        clearedLeafIds.push(leafId)
+      }
+    }
+    set({
+      constraints,
+      pairingSourceId: null,
+      constraintError:
+        clearedLeafIds.length > 0
+          ? `Cleared an incompatible edge/corner pin on ${clearedLeafIds.length} flap${clearedLeafIds.length === 1 ? '' : 's'} after the symmetry mode changed.`
+          : null,
+    })
+    for (const leafId of clearedLeafIds) get().snapFlap(leafId)
   },
 
   armPairing: (leafId) => set({ pairingSourceId: leafId }),
@@ -221,43 +285,93 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (aId === bId) return
     const state = get()
     if (state.constraints.symmetryMode === 'none') return
+    const aBoundary = (state.constraints.perLeaf[aId] ?? NO_LEAF_CONSTRAINT).boundary
+    const bBoundary = (state.constraints.perLeaf[bId] ?? NO_LEAF_CONSTRAINT).boundary
+    if (aBoundary.kind !== 'none' && bBoundary.kind !== 'none') {
+      set({ constraintError: 'Only one flap in a pair can be pinned to an edge or corner.', pairingSourceId: null })
+      return
+    }
+    const nextConstraints = withPair(state.constraints, aId, bId)
+    if (findAnyCollision(collectResolvedPoints(state.tree, nextConstraints))) {
+      set({ constraintError: 'That pairing would place two flaps at the same position.', pairingSourceId: null })
+      return
+    }
     get().pushUndoSnapshot()
-    set({ constraints: withPair(state.constraints, aId, bId), pairingSourceId: null })
+    set({ constraints: nextConstraints, pairingSourceId: null, constraintError: null })
     get().syncPairedLength(aId)
-    get().snapFlap(aId)
+    // Whichever partner (if either) carries the boundary pin is the
+    // authoritative side for the initial snap — the other mirrors it.
+    get().snapFlap(bBoundary.kind !== 'none' ? bId : aId)
   },
 
   pinToSymmetry: (leafId) => {
     const state = get()
     if (state.constraints.symmetryMode === 'none') return
+    const current = state.constraints.perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
+    const candidate: LeafConstraint = { ...current, symmetry: { kind: 'pin_symmetry' } }
+    const res = resolveLeafConstraint(state.constraints.symmetryMode, candidate)
+    if (!res.feasible) {
+      set({ constraintError: "This flap's edge/corner pin can't be combined with symmetry in this mode." })
+      return
+    }
+    const nextConstraints = withPinSymmetry(state.constraints, leafId)
+    if (res.point && findPointCollision(collectResolvedPoints(state.tree, nextConstraints), res.point, leafId)) {
+      set({ constraintError: 'That position is already occupied by another flap.' })
+      return
+    }
     get().pushUndoSnapshot()
-    set({ constraints: withPinSymmetry(state.constraints, leafId) })
+    set({ constraints: nextConstraints, constraintError: null })
     get().snapFlap(leafId)
   },
 
   pinToEdge: (leafId, edge) => {
+    const state = get()
+    const current = state.constraints.perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
+    const candidate: LeafConstraint = { ...current, boundary: { kind: 'pin_edge', edge } }
+    const res = resolveLeafConstraint(state.constraints.symmetryMode, candidate)
+    if (!res.feasible) {
+      set({ constraintError: "That edge can't be combined with this flap's symmetry pin.", pinTargetMode: null })
+      return
+    }
+    const nextConstraints = withPinEdge(state.constraints, leafId, edge)
+    if (res.point && findPointCollision(collectResolvedPoints(state.tree, nextConstraints), res.point, leafId)) {
+      set({ constraintError: 'That position is already occupied by another flap.', pinTargetMode: null })
+      return
+    }
     get().pushUndoSnapshot()
-    set({ constraints: withPinEdge(get().constraints, leafId, edge), pinTargetMode: null, constraintError: null })
+    set({ constraints: nextConstraints, pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
   },
 
   pinToCorner: (leafId, corner) => {
     const state = get()
-    const conflict = Object.entries(state.constraints.perLeaf).find(
-      ([id, c]) => id !== leafId && c.kind === 'pin_corner' && c.corner === corner,
-    )
-    if (conflict) {
-      set({ constraintError: 'That corner is already pinned by another flap.', pinTargetMode: null })
+    const current = state.constraints.perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
+    const candidate: LeafConstraint = { ...current, boundary: { kind: 'pin_corner', corner } }
+    const res = resolveLeafConstraint(state.constraints.symmetryMode, candidate)
+    if (!res.feasible) {
+      set({ constraintError: "That corner can't be combined with this flap's symmetry pin.", pinTargetMode: null })
+      return
+    }
+    const nextConstraints = withPinCorner(state.constraints, leafId, corner)
+    if (res.point && findPointCollision(collectResolvedPoints(state.tree, nextConstraints), res.point, leafId)) {
+      set({ constraintError: 'That corner is already occupied by another flap.', pinTargetMode: null })
       return
     }
     get().pushUndoSnapshot()
-    set({ constraints: withPinCorner(state.constraints, leafId, corner), pinTargetMode: null, constraintError: null })
+    set({ constraints: nextConstraints, pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
   },
 
-  clearConstraint: (leafId) => {
+  clearSymmetryConstraint: (leafId) => {
     get().pushUndoSnapshot()
-    set({ constraints: withClearedConstraint(get().constraints, leafId) })
+    set({ constraints: withClearedSymmetry(get().constraints, leafId) })
+    get().snapFlap(leafId)
+  },
+
+  clearBoundaryConstraint: (leafId) => {
+    get().pushUndoSnapshot()
+    set({ constraints: withClearedBoundary(get().constraints, leafId) })
+    get().snapFlap(leafId)
   },
 
   clearConstraintError: () => set({ constraintError: null }),
@@ -284,6 +398,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHyperparams: (patch) => {
     set({ hyperparams: { ...get().hyperparams, ...patch } })
   },
+
+  setClipToSquare: (value) => set({ clipToSquare: value }),
+  clearUiError: () => set({ uiError: null }),
 
   runSolve: async () => {
     const state = get()
@@ -333,26 +450,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportSession: () => {
     const state = get()
     const session: SavedSession = {
-      version: 1,
+      version: 2,
       tree: state.tree,
       constraints: state.constraints,
       hyperparams: state.hyperparams,
       packing: state.packing,
+      clipToSquare: state.clipToSquare,
     }
     downloadJson('treemaker-session.json', session)
   },
 
   importSession: (data) => {
-    if (!isSavedSession(data)) {
+    const session = parseSavedSession(data)
+    if (!session) {
       throw new Error('Unrecognized session file')
     }
     get().pushUndoSnapshot()
     set({
-      tree: data.tree,
-      constraints: data.constraints,
-      hyperparams: data.hyperparams,
-      packing: data.packing,
-      lastSolvedScale: data.packing?.scale ?? null,
+      tree: session.tree,
+      constraints: session.constraints,
+      hyperparams: session.hyperparams,
+      packing: session.packing,
+      clipToSquare: session.clipToSquare ?? true,
+      lastSolvedScale: session.packing?.scale ?? null,
       activeParentId: null,
       selectedEdgeId: null,
       pairingSourceId: null,

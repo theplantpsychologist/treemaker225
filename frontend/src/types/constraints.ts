@@ -2,16 +2,34 @@ export type SymmetryMode = 'none' | 'book' | 'diagonal'
 export type EdgeSide = 'top' | 'bottom' | 'left' | 'right'
 export type CornerId = 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right'
 
-export type FlapConstraint =
+/** A leaf's symmetry-family constraint (whether/how it relates to the
+ * global symmetry line) and boundary-family constraint (whether/how it's
+ * pinned to the paper's edge/corner) are independent, simultaneously
+ * settable slots — see `geometry/constraintResolution.ts` for the
+ * feasibility/collision rules that govern combining them. */
+export type SymmetryConstraint =
   | { kind: 'none' }
   | { kind: 'pin_symmetry' }
   | { kind: 'pair'; pairedWith: string }
+
+export type BoundaryConstraint =
+  | { kind: 'none' }
   | { kind: 'pin_edge'; edge: EdgeSide }
   | { kind: 'pin_corner'; corner: CornerId }
 
+export interface LeafConstraint {
+  symmetry: SymmetryConstraint
+  boundary: BoundaryConstraint
+}
+
+export const NO_LEAF_CONSTRAINT: LeafConstraint = {
+  symmetry: { kind: 'none' },
+  boundary: { kind: 'none' },
+}
+
 export interface ConstraintsState {
   symmetryMode: SymmetryMode
-  perLeaf: Record<string, FlapConstraint>
+  perLeaf: Record<string, LeafConstraint>
 }
 
 export const DEFAULT_CONSTRAINTS: ConstraintsState = {

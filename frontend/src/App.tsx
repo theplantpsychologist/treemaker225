@@ -15,6 +15,8 @@ const MAX_SPLIT = 80
 function App() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'ok' | 'error'>('checking')
   const solveError = useAppStore((s) => s.solveError)
+  const uiError = useAppStore((s) => s.uiError)
+  const clearUiError = useAppStore((s) => s.clearUiError)
   const packing = useAppStore((s) => s.packing)
   const [splitPercent, setSplitPercent] = useState(50)
   const mainRef = useRef<HTMLElement>(null)
@@ -60,6 +62,16 @@ function App() {
             <h2>Tree</h2>
           </div>
           <div className="pane-body">
+            {uiError && (
+              <div className="pane-status-stack">
+                <div className="solve-error">
+                  {uiError}
+                  <button className="dismiss-error" onClick={clearUiError}>
+                    ×
+                  </button>
+                </div>
+              </div>
+            )}
             <TreeEditorCanvas />
             <ConstraintLegend />
           </div>

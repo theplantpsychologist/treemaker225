@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { useAppStore } from '../../state/store'
+import { IconButton } from '../icons/IconButton'
+import gearIcon from '../../assets/gear.svg'
 import './SettingsModal.css'
 
 export function SettingsModal() {
   const [open, setOpen] = useState(false)
   const hyperparams = useAppStore((s) => s.hyperparams)
   const setHyperparams = useAppStore((s) => s.setHyperparams)
+  const clipToSquare = useAppStore((s) => s.clipToSquare)
+  const setClipToSquare = useAppStore((s) => s.setClipToSquare)
   const refines = hyperparams.shape !== 'circle'
 
   return (
     <>
-      <button className="settings-gear" title="Advanced solver settings" onClick={() => setOpen(true)}>
-        ⚙
-      </button>
+      <IconButton icon={gearIcon} label="Advanced solver settings" onClick={() => setOpen(true)} />
       {open && (
         <div className="settings-modal-backdrop" onClick={() => setOpen(false)}>
           <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
@@ -48,6 +50,17 @@ export function SettingsModal() {
                 disabled={!refines}
                 onChange={(e) => setHyperparams({ alpha: Number(e.target.value) })}
               />
+            </label>
+            <label
+              className="settings-field settings-checkbox"
+              title="Hide any part of a flap/river that spills past the paper square"
+            >
+              <input
+                type="checkbox"
+                checked={clipToSquare}
+                onChange={(e) => setClipToSquare(e.target.checked)}
+              />
+              clip to paper square
             </label>
             <button className="settings-done" onClick={() => setOpen(false)}>
               Done

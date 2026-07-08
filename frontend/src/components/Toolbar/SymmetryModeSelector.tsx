@@ -1,10 +1,14 @@
 import { useAppStore } from '../../state/store'
 import type { SymmetryMode } from '../../types/constraints'
+import { IconButton } from '../icons/IconButton'
+import noneIcon from '../../assets/none.svg'
+import bookIcon from '../../assets/book_sym.svg'
+import diagIcon from '../../assets/diag_sym.svg'
 
-const OPTIONS: { value: SymmetryMode; label: string }[] = [
-  { value: 'none', label: 'None' },
-  { value: 'book', label: 'Book' },
-  { value: 'diagonal', label: 'Diagonal' },
+const OPTIONS: { value: SymmetryMode; label: string; icon: string }[] = [
+  { value: 'none', label: 'No symmetry', icon: noneIcon },
+  { value: 'book', label: 'Book symmetry (mirror across x=0.5)', icon: bookIcon },
+  { value: 'diagonal', label: 'Diagonal symmetry (mirror across y=x)', icon: diagIcon },
 ]
 
 export function SymmetryModeSelector() {
@@ -12,15 +16,16 @@ export function SymmetryModeSelector() {
   const setSymmetryMode = useAppStore((s) => s.setSymmetryMode)
 
   return (
-    <label className="hp-field" title="Symmetry line used by pin-to-symmetry and pair constraints">
-      symmetry
-      <select value={symmetryMode} onChange={(e) => setSymmetryMode(e.target.value as SymmetryMode)}>
-        {OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="symmetry-mode-selector">
+      {OPTIONS.map((o) => (
+        <IconButton
+          key={o.value}
+          icon={o.icon}
+          label={o.label}
+          active={symmetryMode === o.value}
+          onClick={() => setSymmetryMode(o.value)}
+        />
+      ))}
+    </div>
   )
 }

@@ -24,13 +24,28 @@ class CornerId(str, Enum):
     BOTTOM_RIGHT = "bottom_right"
 
 
-class FlapConstraint(CamelModel):
-    kind: Literal["none", "pin_symmetry", "pair", "pin_edge", "pin_corner"] = "none"
+class SymmetryConstraint(CamelModel):
+    """Whether/how a leaf relates to the global symmetry line — independent
+    of its boundary constraint (see `LeafConstraint`)."""
+
+    kind: Literal["none", "pin_symmetry", "pair"] = "none"
     paired_with: Optional[str] = None
+
+
+class BoundaryConstraint(CamelModel):
+    """Whether/how a leaf is pinned to the paper's edge/corner —
+    independent of its symmetry constraint (see `LeafConstraint`)."""
+
+    kind: Literal["none", "pin_edge", "pin_corner"] = "none"
     edge: Optional[EdgeSide] = None
     corner: Optional[CornerId] = None
 
 
+class LeafConstraint(CamelModel):
+    symmetry: SymmetryConstraint = SymmetryConstraint()
+    boundary: BoundaryConstraint = BoundaryConstraint()
+
+
 class Constraints(CamelModel):
     symmetry_mode: SymmetryMode = SymmetryMode.NONE
-    per_leaf: Dict[str, FlapConstraint] = {}
+    per_leaf: Dict[str, LeafConstraint] = {}

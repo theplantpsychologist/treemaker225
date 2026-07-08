@@ -36,8 +36,26 @@ export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initi
   const baseRef = useRef<ViewBox>(initial)
   const initializedRef = useRef(false)
   const panState = useRef<PanState | null>(null)
+  const [renderedWidthPx, setRenderedWidthPx] = useState(0)
 
   const viewBoxAttr = `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`
+
+  /** World (SVG viewBox) units per on-screen CSS pixel — multiply a desired
+   * constant-screen-pixel size by this to get the equivalent world-space
+   * size for the current pan/zoom level. Falls back to 1 before the SVG has
+   * been measured. */
+  const pxToWorld = renderedWidthPx > 0 ? viewBox.w / renderedWidthPx : 1
+
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width
+      if (width) setRenderedWidthPx(width)
+    })
+    observer.observe(svg)
+    return () => observer.disconnect()
+  }, [svgRef])
 
   /** For canvases with no fixed logical coordinate space (the tree editor),
    * call once on mount with the SVG's actual rendered pixel box so world
@@ -139,5 +157,5 @@ export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initi
     return () => svg.removeEventListener('wheel', onWheel)
   }, [svgRef])
 
-  return { viewBox, viewBoxAttr, beginPan, onPanMove, endPan, toWorldPoint, initializeBase }
+  return { viewBox, viewBoxAttr, beginPan, onPanMove, endPan, toWorldPoint, initializeBase, pxToWorld }
 }

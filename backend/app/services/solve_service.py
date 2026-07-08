@@ -4,6 +4,7 @@ from typing import Set
 
 import networkx as nx
 
+from app.core.constraint_resolution import collect_resolved_points, find_any_collision, resolve_leaf_constraint
 from app.core.layout import solve_internal_layout
 from app.core.packing import run_circle_restart, run_polygon_restart
 from app.core.shapes import get_bases
@@ -14,30 +15,33 @@ from app.schemas.solve import InitFrom, NodePositionOut, SolveDiagnostics, Solve
 
 
 def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
-    seen_corners: dict = {}
     for leaf_id, c in constraints.per_leaf.items():
         if leaf_id not in leaf_ids:
             raise ValueError(f"constraint references unknown leaf '{leaf_id}'")
-        if c.kind in ("pin_symmetry", "pair") and constraints.symmetry_mode == "none":
-            raise ValueError(f"'{leaf_id}' has a {c.kind} constraint but symmetryMode is none")
-        if c.kind == "pair":
-            partner = c.paired_with
+        if c.symmetry.kind in ("pin_symmetry", "pair") and constraints.symmetry_mode == "none":
+            raise ValueError(f"'{leaf_id}' has a {c.symmetry.kind} constraint but symmetryMode is none")
+        if c.symmetry.kind == "pair":
+            partner = c.symmetry.paired_with
             if not partner or partner not in leaf_ids:
                 raise ValueError(f"'{leaf_id}' is paired with an invalid leaf '{partner}'")
             partner_c = constraints.per_leaf.get(partner)
-            if not partner_c or partner_c.kind != "pair" or partner_c.paired_with != leaf_id:
+            if not partner_c or partner_c.symmetry.kind != "pair" or partner_c.symmetry.paired_with != leaf_id:
                 raise ValueError(f"'{leaf_id}' and '{partner}' must be mutually and exclusively paired")
-        if c.kind == "pin_edge" and c.edge is None:
+            if c.boundary.kind != "none" and partner_c.boundary.kind != "none":
+                raise ValueError(f"only one of '{leaf_id}'/'{partner}' may have an edge/corner pin")
+        if c.boundary.kind == "pin_edge" and c.boundary.edge is None:
             raise ValueError(f"'{leaf_id}' has a pin_edge constraint with no edge specified")
-        if c.kind == "pin_corner":
-            if c.corner is None:
-                raise ValueError(f"'{leaf_id}' has a pin_corner constraint with no corner specified")
-            if c.corner in seen_corners:
-                raise ValueError(
-                    f"corner '{c.corner}' is already claimed by '{seen_corners[c.corner]}', "
-                    f"cannot also pin '{leaf_id}' there"
-                )
-            seen_corners[c.corner] = leaf_id
+        if c.boundary.kind == "pin_corner" and c.boundary.corner is None:
+            raise ValueError(f"'{leaf_id}' has a pin_corner constraint with no corner specified")
+        if not resolve_leaf_constraint(constraints.symmetry_mode, c).feasible:
+            raise ValueError(
+                f"'{leaf_id}' combines symmetry and boundary constraints that can never be satisfied together"
+            )
+
+    collision = find_any_collision(collect_resolved_points(list(leaf_ids), constraints))
+    if collision is not None:
+        a, b = collision
+        raise ValueError(f"'{a.leaf_id}' and '{b.leaf_id}' resolve to the same fixed position")
 
 
 def _normalize_paired_lengths(tree: nx.DiGraph, constraints: Constraints) -> None:
@@ -46,9 +50,9 @@ def _normalize_paired_lengths(tree: nx.DiGraph, constraints: Constraints) -> Non
     VariablePlan (and its bounds/decode) are built."""
     seen: Set[str] = set()
     for leaf_id, c in constraints.per_leaf.items():
-        if c.kind != "pair" or leaf_id in seen:
+        if c.symmetry.kind != "pair" or leaf_id in seen:
             continue
-        partner = c.paired_with
+        partner = c.symmetry.paired_with
         seen.add(leaf_id)
         seen.add(partner)
         parent_a = next(tree.predecessors(leaf_id))

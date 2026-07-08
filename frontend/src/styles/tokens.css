@@ -1,0 +1,36 @@
+/*
+ * Central home for hard-coded stroke widths and dash patterns (see the
+ * "Styling organization" section of the README). Colors live in
+ * `constants/constraintColors.ts`; pixel-based sizes that must stay a
+ * constant number of screen pixels regardless of zoom live in
+ * `constants/sizeTokens.ts` and are applied via `hooks/useViewBoxPanZoom`'s
+ * `pxToWorld`. Everything in this file is a CSS custom property consumed by
+ * component stylesheets via `var(--sw-*)` / `var(--dash-*)`.
+ */
+:root {
+  --sw-hairline: 1px;
+  --sw-thin: 1.5px;
+  --sw-regular: 2px;
+  --sw-thick: 2.5px;
+  --sw-selected: 3px;
+
+  --dash-symmetry: 6 4;
+}
+
+/*
+ * Every stroked shape in both canvases gets a non-scaling stroke so line
+ * weight reads as a constant number of screen pixels no matter the current
+ * pan/zoom viewBox — this is the one piece of "zoom-invariant sizing" that's
+ * a pure CSS/SVG property with no JS math involved.
+ */
+.tree-edge,
+.tree-node,
+.packing-square,
+.packing-flap,
+.symmetry-line,
+.pin-handle,
+.packing-river,
+.overlap-area,
+.center-dot {
+  vector-effect: non-scaling-stroke;
+}

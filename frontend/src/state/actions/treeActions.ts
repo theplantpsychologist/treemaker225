@@ -65,3 +65,51 @@ export function setEdgeLength(tree: TreeState, nodeId: string, newLength: number
   const newY = parent.y + length * Math.sin(angle)
   return dragNodeTo(tree, nodeId, newX, newY)
 }
+
+/**
+ * Deletes a leaf outright, or a degree-2 node (exactly one child) by
+ * splicing it out and merging its two adjacent edge lengths into one
+ * (preserving the total tree distance across it) — but refuses to delete
+ * any node with two or more children, per the user's "leaf or degree-2
+ * only, never a branch" rule. Root is handled as a degree-{0,1} special
+ * case (root has no parent edge to merge, only a child to promote).
+ * Returns null for the disallowed (branch node) case.
+ */
+export function deleteNode(tree: TreeState, nodeId: string): { tree: TreeState; deletedId: string } | null {
+  const node = tree.nodes[nodeId]
+  if (!node) return null
+  const isRoot = node.parentId === null
+
+  if (node.children.length >= 2) return null
+
+  if (isRoot) {
+    if (node.children.length === 0) {
+      return { tree: { rootId: null, nodes: {} }, deletedId: nodeId }
+    }
+    const childId = node.children[0]
+    const child = tree.nodes[childId]
+    const nodes = { ...tree.nodes }
+    delete nodes[nodeId]
+    nodes[childId] = { ...child, parentId: null, length: null }
+    return { tree: { rootId: childId, nodes }, deletedId: nodeId }
+  }
+
+  const parent = tree.nodes[node.parentId!]
+  const nodes = { ...tree.nodes }
+  delete nodes[nodeId]
+
+  if (node.children.length === 0) {
+    nodes[node.parentId!] = { ...parent, children: parent.children.filter((id) => id !== nodeId) }
+    return { tree: { ...tree, nodes }, deletedId: nodeId }
+  }
+
+  const childId = node.children[0]
+  const child = tree.nodes[childId]
+  const mergedLength = (node.length ?? 0) + (child.length ?? 0)
+  nodes[node.parentId!] = {
+    ...parent,
+    children: parent.children.map((id) => (id === nodeId ? childId : id)),
+  }
+  nodes[childId] = { ...child, parentId: node.parentId, length: mergedLength }
+  return { tree: { ...tree, nodes }, deletedId: nodeId }
+}

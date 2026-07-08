@@ -69,8 +69,18 @@ function computeNode(
   }
 
   const width = scale * node.length
-  const outer = inflatePaths(innerUnion, width * CLIPPER_SCALE, JoinType.Round, EndType.Polygon)
-  const band = difference(outer, innerUnion, FillRule.NonZero)
+  // Round joins are only correct for circles — every polygon shape gets
+  // mitered (straight-edge) joins instead, the practical stand-in for a
+  // true straight-skeleton sweep (exact for convex geometry; Clipper's
+  // internal miter limit handles reflex corners gracefully).
+  const joinType = shape === 'circle' ? JoinType.Round : JoinType.Miter
+  const outer = inflatePaths(innerUnion, width * CLIPPER_SCALE, joinType, EndType.Polygon)
+  // The inner boundary is the OUTER shape offset back inward by the same
+  // width — not the original children union — so the band is exactly
+  // `width` thick everywhere and a tight gap between two children gets
+  // swallowed by the inward offset instead of rendering as a sliver.
+  const innerBoundary = inflatePaths(outer, -width * CLIPPER_SCALE, joinType, EndType.Polygon)
+  const band = difference(outer, innerBoundary, FillRule.NonZero)
   return { footprint: outer, bands: [...bands, { nodeId, rings: fromClipperRings(band) }] }
 }
 

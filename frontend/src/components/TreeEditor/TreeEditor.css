@@ -13,13 +13,13 @@
 
 .tree-edge {
   stroke: #6b7280;
-  stroke-width: 2;
+  stroke-width: var(--sw-regular);
 }
 
 .tree-node {
   fill: #4b5563;
   stroke: white;
-  stroke-width: 2;
+  stroke-width: var(--sw-regular);
   cursor: grab;
 }
 
@@ -34,7 +34,7 @@
 
 .tree-node.edge-selected {
   stroke: #2563eb;
-  stroke-width: 3;
+  stroke-width: var(--sw-selected);
 }
 
 .empty-hint {

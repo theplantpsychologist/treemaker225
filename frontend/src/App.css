@@ -11,6 +11,8 @@
   gap: 1rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 2;
 }
 
 .app-header h1 {
@@ -41,6 +43,8 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .pane-divider {
@@ -48,6 +52,8 @@
   cursor: col-resize;
   background: var(--border);
   touch-action: none;
+  position: relative;
+  z-index: 2;
 }
 
 .pane-divider:hover,
@@ -116,6 +122,10 @@
 
 .solve-error {
   align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   background: #fee2e2;
   color: #991b1b;
   border: 1px solid #fca5a5;
@@ -123,6 +133,16 @@
   padding: 0.4rem 0.6rem;
   font-size: 0.8rem;
   pointer-events: auto;
+}
+
+.dismiss-error {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
 }
 
 .diagnostics-badge {

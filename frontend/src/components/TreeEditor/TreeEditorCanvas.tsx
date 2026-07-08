@@ -4,9 +4,8 @@ import { useAppStore } from '../../state/store'
 import { colorForConstraint } from '../../constants/constraintColors'
 import { useTreeEditorInteraction } from './useTreeEditorInteraction'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
+import { TREE_NODE_RADIUS_PX } from '../../constants/sizeTokens'
 import './TreeEditor.css'
-
-const NODE_RADIUS = 7
 
 export function TreeEditorCanvas() {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -17,6 +16,7 @@ export function TreeEditorCanvas() {
   const perLeaf = useAppStore((s) => s.constraints.perLeaf)
   const createRootAt = useAppStore((s) => s.createRootAt)
   const addChildAt = useAppStore((s) => s.addChildAt)
+  const deleteActiveNode = useAppStore((s) => s.deleteActiveNode)
   const { onNodePointerDown, onPointerMove, onPointerUp } = useTreeEditorInteraction(svgRef)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: 800, h: 600 })
 
@@ -30,11 +30,18 @@ export function TreeEditorCanvas() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping = target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+      if (isTyping) return
       if (e.key === 'Escape') clearSelection()
+      else if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault()
+        deleteActiveNode()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [clearSelection])
+  }, [clearSelection, deleteActiveNode])
 
   const onBackgroundPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
     try {
@@ -61,6 +68,7 @@ export function TreeEditorCanvas() {
   }
 
   const nodes = Object.values(tree.nodes)
+  const nodeRadius = TREE_NODE_RADIUS_PX * pan.pxToWorld
 
   return (
     <svg
@@ -118,7 +126,7 @@ export function TreeEditorCanvas() {
             style={style}
             cx={node.x}
             cy={node.y}
-            r={NODE_RADIUS}
+            r={nodeRadius}
             onPointerDown={(e) => onNodePointerDown(node.id, e)}
           />
         )
