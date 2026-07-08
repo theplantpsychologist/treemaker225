@@ -62,6 +62,19 @@ export function SettingsModal() {
               />
               clip to paper square
             </label>
+            {hyperparams.shape === 'hexagon' && (
+              <label
+                className="settings-field settings-checkbox"
+                title="Rotate all hexagons an extra 90 degrees on top of whatever the symmetry mode already applies"
+              >
+                <input
+                  type="checkbox"
+                  checked={hyperparams.hexagonExtraRotation}
+                  onChange={(e) => setHyperparams({ hexagonExtraRotation: e.target.checked })}
+                />
+                rotate hexagons 90°
+              </label>
+            )}
             <button className="settings-done" onClick={() => setOpen(false)}>
               Done
             </button>

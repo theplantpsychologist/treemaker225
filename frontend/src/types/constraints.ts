@@ -17,14 +17,21 @@ export type BoundaryConstraint =
   | { kind: 'pin_edge'; edge: EdgeSide }
   | { kind: 'pin_corner'; corner: CornerId }
 
+/** A third, orthogonal slot: freezes whatever positional degrees of freedom
+ * the symmetry+boundary combo leaves free at a snapshot value, independent
+ * of both other slots. */
+export type LockConstraint = { kind: 'none' } | { kind: 'locked'; point: { x: number; y: number } }
+
 export interface LeafConstraint {
   symmetry: SymmetryConstraint
   boundary: BoundaryConstraint
+  locked: LockConstraint
 }
 
 export const NO_LEAF_CONSTRAINT: LeafConstraint = {
   symmetry: { kind: 'none' },
   boundary: { kind: 'none' },
+  locked: { kind: 'none' },
 }
 
 export interface ConstraintsState {

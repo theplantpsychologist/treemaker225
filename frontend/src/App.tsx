@@ -5,9 +5,12 @@ import { API_BASE } from './api/client'
 import { TreeEditorCanvas } from './components/TreeEditor/TreeEditorCanvas'
 import { PackingEditorCanvas } from './components/PackingEditor/PackingEditorCanvas'
 import { PackingToolbar } from './components/Toolbar/PackingToolbar'
+import { ShapeSelector } from './components/Toolbar/ShapeSelector'
 import { ConstraintLegend } from './components/ConstraintLegend/ConstraintLegend'
 import { UndoRedoControls } from './components/UndoRedo/UndoRedoControls'
+import { ThemeToggle } from './components/Theme/ThemeToggle'
 import { useAppStore } from './state/store'
+import { useShapeTheme } from './hooks/useShapeTheme'
 
 const MIN_SPLIT = 20
 const MAX_SPLIT = 80
@@ -18,9 +21,12 @@ function App() {
   const uiError = useAppStore((s) => s.uiError)
   const clearUiError = useAppStore((s) => s.clearUiError)
   const packing = useAppStore((s) => s.packing)
+  const shape = useAppStore((s) => s.hyperparams.shape)
   const [splitPercent, setSplitPercent] = useState(50)
   const mainRef = useRef<HTMLElement>(null)
   const draggingDivider = useRef(false)
+
+  useShapeTheme(shape)
 
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
@@ -52,14 +58,16 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>treemaker225</h1>
+        <h1>Treemaker Pro</h1>
         <span className={`backend-status backend-status--${backendStatus}`}>backend: {backendStatus}</span>
+        <ShapeSelector />
         <UndoRedoControls />
+        <ThemeToggle />
       </header>
       <main className="app-main" ref={mainRef}>
         <section className="pane tree-pane" style={{ flex: `0 0 ${splitPercent}%` }}>
           <div className="pane-header">
-            <h2>Tree</h2>
+            <h2>Tree Editor</h2>
           </div>
           <div className="pane-body">
             {uiError && (
@@ -85,7 +93,7 @@ function App() {
         />
         <section className="pane packing-pane" style={{ flex: '1 1 auto' }}>
           <div className="pane-header">
-            <h2>Packing</h2>
+            <h2>Packing Editor</h2>
           </div>
           <PackingToolbar />
           <div className="pane-body">

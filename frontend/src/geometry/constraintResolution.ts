@@ -23,8 +23,12 @@ export interface Resolution {
 const FEASIBLE_FREE: Resolution = { feasible: true, point: null }
 const INFEASIBLE: Resolution = { feasible: false, point: null }
 
+/** A pin_edge + diagonal pin_symmetry combo collapses to wherever that edge
+ * meets the line x=y: top (y=1) or right (x=1) both force (1,1); bottom
+ * (y=0) or left (x=0) both force (0,0) — see `geometry/edgePin.ts` for the
+ * y-up unit square convention this assumes. */
 function diagonalCorner(edge: EdgeSide): Point {
-  return edge === 'top' || edge === 'left' ? { x: 0, y: 0 } : { x: 1, y: 1 }
+  return edge === 'top' || edge === 'right' ? { x: 1, y: 1 } : { x: 0, y: 0 }
 }
 
 function onSymmetryLine(mode: SymmetryMode, p: Point): boolean {
@@ -38,17 +42,17 @@ function onSymmetryLine(mode: SymmetryMode, p: Point): boolean {
  * the global symmetry mode:
  * - `pin_corner` is always fully fixed at that corner; combined with
  *   `pin_symmetry`, it additionally requires the corner lie on the symmetry
- *   line (diagonal passes through top_left/bottom_right only; book passes
+ *   line (diagonal passes through top_right/bottom_left only; book passes
  *   through none — any book+pin_corner+pin_symmetry combo is infeasible).
  * - `pin_edge` + `pin_symmetry`: book+top/bottom resolves to that edge's
  *   midpoint; book+left/right is a straight contradiction; diagonal+any
- *   edge collapses to top_left (top/left) or bottom_right (bottom/right).
+ *   edge collapses to top_right (top/right) or bottom_left (bottom/left).
  * - Anything else (a lone edge pin, a lone symmetry pin, `pair`, `none`)
  *   still has at least one free degree of freedom — feasible, unresolved.
  * Does NOT account for `pair` mirroring on its own — see
  * `collectResolvedPoints` for the partner-mirroring behavior.
  */
-export function resolveLeafConstraint(mode: SymmetryMode, constraint: LeafConstraint): Resolution {
+function resolveSymmetryBoundary(mode: SymmetryMode, constraint: LeafConstraint): Resolution {
   const pinnedToSymmetry = constraint.symmetry.kind === 'pin_symmetry'
   const boundary = constraint.boundary
 
@@ -68,6 +72,51 @@ export function resolveLeafConstraint(mode: SymmetryMode, constraint: LeafConstr
   }
 
   return FEASIBLE_FREE
+}
+
+/** A `locked` slot overrides symmetry+boundary resolution entirely — it
+ * freezes whatever DOF they leave free at a snapshot value, so a locked
+ * leaf is always fully fixed regardless of its other two slots. */
+export function resolveLeafConstraint(mode: SymmetryMode, constraint: LeafConstraint): Resolution {
+  if (constraint.locked.kind === 'locked') return { feasible: true, point: constraint.locked.point }
+  return resolveSymmetryBoundary(mode, constraint)
+}
+
+/** Whether the leaf is already fully fixed by symmetry+boundary alone,
+ * ignoring any existing lock — used to decide whether locking it would
+ * actually freeze any remaining freedom (locking an already corner-pinned
+ * leaf, for instance, would be a pointless no-op). */
+export function isFullyFixedBySymmetryBoundary(mode: SymmetryMode, constraint: LeafConstraint): boolean {
+  const res = resolveSymmetryBoundary(mode, constraint)
+  return res.feasible && res.point != null
+}
+
+export type AxisFreedom = 'free' | 'fixed' | 'linked'
+
+/** Per-axis editability from symmetry+boundary alone (ignoring `locked` and
+ * ignoring pair-derived-follower status — callers layer those on top: a
+ * locked leaf's axes are always independently 'free' regardless of what
+ * this returns, and a leaf whose position is purely mirrored from a pair
+ * partner's own resolution is always fully 'fixed' regardless of its own
+ * symmetry+boundary combo). Assumes a feasible combination (infeasible ones
+ * are rejected before ever being stored). 'linked' means both axes are
+ * coupled (diagonal `pin_symmetry`: editing either moves both to match). */
+export function axisFreedom(mode: SymmetryMode, constraint: LeafConstraint): { x: AxisFreedom; y: AxisFreedom } {
+  const boundary = constraint.boundary
+  const pinnedToSymmetry = constraint.symmetry.kind === 'pin_symmetry'
+
+  if (boundary.kind === 'pin_corner') return { x: 'fixed', y: 'fixed' }
+
+  if (boundary.kind === 'pin_edge') {
+    if (pinnedToSymmetry && mode !== 'none') return { x: 'fixed', y: 'fixed' }
+    return boundary.edge === 'left' || boundary.edge === 'right' ? { x: 'fixed', y: 'free' } : { x: 'free', y: 'fixed' }
+  }
+
+  if (pinnedToSymmetry) {
+    if (mode === 'book') return { x: 'fixed', y: 'free' }
+    if (mode === 'diagonal') return { x: 'linked', y: 'linked' }
+  }
+  return { x: 'free', y: 'free' }
 }
 
 export interface ResolvedPointEntry {

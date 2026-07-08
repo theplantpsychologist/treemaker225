@@ -6,7 +6,7 @@
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  background: #fafafa;
+  background: var(--panel-bg);
   /* Hard backstop: flaps/handles may spill past the paper square inside the
      canvas (see .packing-editor-canvas's own overflow:visible), but must
      never spill past this wrapper into the toolbar, divider, or tree pane. */
@@ -37,17 +37,22 @@
 }
 
 .packing-square {
-  fill: white;
+  fill: var(--panel-bg);
   stroke: #d1d5db;
   stroke-width: var(--sw-regular);
 }
 
 .packing-flap {
-  fill: rgba(37, 99, 235, 0.12);
-  stroke: #2563eb;
+  fill: var(--flap-color);
+  fill-opacity: 0.15;
+  stroke: var(--flap-color);
   stroke-width: var(--sw-thin);
   cursor: grab;
   touch-action: none;
+}
+
+.packing-flap.unconstrained {
+  filter: saturate(0.4) brightness(1.15);
 }
 
 .packing-flap.selected {
@@ -55,18 +60,23 @@
 }
 
 .symmetry-line {
-  stroke: #17a2b8;
+  stroke: var(--accent);
   stroke-width: var(--sw-thin);
   stroke-dasharray: var(--dash-symmetry);
   pointer-events: none;
 }
 
 .pin-handle {
+  fill: var(--accent);
+  fill-opacity: 0.3;
+  stroke: var(--accent);
   stroke-width: var(--sw-thin);
   cursor: pointer;
 }
 
 .pin-handle-corner.occupied {
+  fill: #e5e7eb;
+  stroke: #9ca3af;
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -76,9 +86,9 @@
 }
 
 .packing-river {
-  /* Fill/stroke come from COLOR_UNCONSTRAINED via inline style (see
-     PackingEditorCanvas) so rivers always match the "unconstrained" flap
-     color exactly, not just visually. */
+  fill: var(--river-color);
+  fill-opacity: 0.2;
+  stroke: var(--river-color);
   stroke-width: var(--sw-hairline);
   cursor: grab;
   touch-action: none;

@@ -26,3 +26,11 @@
   border-radius: 2px;
   flex-shrink: 0;
 }
+
+.constraint-legend-swatch-flap {
+  background: var(--flap-color);
+}
+
+.constraint-legend-swatch-river {
+  background: var(--river-color);
+}

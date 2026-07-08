@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
-import { colorForConstraint } from '../../constants/constraintColors'
+import { distanceToSegment } from '../../geometry/treeGeometry'
 import { useTreeEditorInteraction } from './useTreeEditorInteraction'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
-import { TREE_NODE_RADIUS_PX } from '../../constants/sizeTokens'
+import { EDGE_HIT_TOLERANCE_MIN_PX, TREE_NODE_RADIUS_PX } from '../../constants/sizeTokens'
 import './TreeEditor.css'
 
 export function TreeEditorCanvas() {
@@ -13,7 +13,7 @@ export function TreeEditorCanvas() {
   const activeParentId = useAppStore((s) => s.activeParentId)
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
   const clearSelection = useAppStore((s) => s.clearSelection)
-  const perLeaf = useAppStore((s) => s.constraints.perLeaf)
+  const selectEdge = useAppStore((s) => s.selectEdge)
   const createRootAt = useAppStore((s) => s.createRootAt)
   const addChildAt = useAppStore((s) => s.addChildAt)
   const deleteActiveNode = useAppStore((s) => s.deleteActiveNode)
@@ -44,6 +44,28 @@ export function TreeEditorCanvas() {
   }, [clearSelection, deleteActiveNode])
 
   const onBackgroundPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
+    // A click close enough to an edge selects it (for the Inspector / cross-
+    // canvas highlighting) instead of panning or creating a new child —
+    // checked here, before `pan.beginPan`, so `pan.endPan()` never reports
+    // 'click' for an edge hit and the "empty click -> add child" branch in
+    // `onSvgPointerUp` is naturally skipped.
+    const p = pan.toWorldPoint(e)
+    const tolerance = EDGE_HIT_TOLERANCE_MIN_PX * pan.pxToWorld
+    let hitEdgeId: string | null = null
+    let hitDist = tolerance
+    for (const node of Object.values(tree.nodes)) {
+      if (!node.parentId) continue
+      const parent = tree.nodes[node.parentId]
+      const d = distanceToSegment(p, parent, node)
+      if (d <= hitDist) {
+        hitDist = d
+        hitEdgeId = node.id
+      }
+    }
+    if (hitEdgeId) {
+      selectEdge(hitEdgeId)
+      return
+    }
     try {
       e.currentTarget.setPointerCapture(e.pointerId)
     } catch {
@@ -100,11 +122,15 @@ export function TreeEditorCanvas() {
         return (
           <line
             key={`edge-${node.id}`}
-            className="tree-edge"
+            className={'tree-edge' + (node.id === selectedEdgeId ? ' selected' : '')}
             x1={parent.x}
             y1={parent.y}
             x2={node.x}
             y2={node.y}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              selectEdge(node.id)
+            }}
           />
         )
       })}
@@ -113,7 +139,6 @@ export function TreeEditorCanvas() {
         const isLeaf = !node.parentId ? false : node.children.length === 0
         const isActiveParent = node.id === activeParentId
         const isEdgeSelected = node.id === selectedEdgeId
-        const style = isLeaf && !isActiveParent ? { fill: colorForConstraint(node.id, perLeaf[node.id]) } : undefined
         return (
           <circle
             key={node.id}
@@ -123,7 +148,6 @@ export function TreeEditorCanvas() {
               (isEdgeSelected ? ' edge-selected' : '') +
               (isLeaf ? ' leaf' : '')
             }
-            style={style}
             cx={node.x}
             cy={node.y}
             r={nodeRadius}

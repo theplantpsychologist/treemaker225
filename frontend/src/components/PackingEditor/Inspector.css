@@ -1,14 +1,20 @@
 .inspector-rail {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  z-index: 6;
   width: 13rem;
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
   padding: 0.75rem;
   border-left: 1px solid var(--border);
-  background: white;
+  background: var(--panel-bg);
+  color: var(--text);
   overflow-y: auto;
   font-size: 0.75rem;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.08);
 }
 
 .inspector-panel {
@@ -62,6 +68,32 @@
 .inspector-group-buttons {
   display: flex;
   gap: 0.35rem;
+}
+
+.inspector-position-fields {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.inspector-position-fields label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #6b7280;
+}
+
+.inspector-position-input {
+  width: 4.5rem;
+  font-size: 0.75rem;
+  font-family: var(--mono, monospace);
+  padding: 0.15rem 0.3rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+.inspector-position-input:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
 }
 
 .inspector-text-button {

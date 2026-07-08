@@ -2,7 +2,7 @@
   width: 100%;
   height: 100%;
   display: block;
-  background: #fafafa;
+  background: var(--panel-bg);
   touch-action: none;
   cursor: crosshair;
 }
@@ -16,6 +16,11 @@
   stroke-width: var(--sw-regular);
 }
 
+.tree-edge.selected {
+  stroke: var(--accent);
+  stroke-width: var(--sw-selected);
+}
+
 .tree-node {
   fill: #4b5563;
   stroke: white;
@@ -24,7 +29,7 @@
 }
 
 .tree-node.leaf {
-  fill: #2563eb;
+  fill: var(--accent);
 }
 
 .tree-node.selected {
@@ -33,7 +38,7 @@
 }
 
 .tree-node.edge-selected {
-  stroke: #2563eb;
+  stroke: var(--accent);
   stroke-width: var(--sw-selected);
 }
 

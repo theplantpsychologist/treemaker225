@@ -7,13 +7,15 @@
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  background: rgba(255, 255, 255, 0.85);
-  color: #4b5563;
+  background: color-mix(in srgb, var(--panel-bg) 85%, transparent);
+  color: var(--text);
   font-size: 0.85rem;
 }
 
+/* Matches .packing-editor-canvas's own sizing exactly (same container-type:
+   size ancestor, .packing-editor-stage) so the robot covers the packing
+   square precisely regardless of zoom/pane size. */
 .solving-overlay-robot {
-  width: 25%;
-  max-width: 160px;
-  height: auto;
+  width: min(100cqw, 100cqh);
+  height: min(100cqw, 100cqh);
 }

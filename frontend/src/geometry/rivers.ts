@@ -2,6 +2,7 @@ import { difference, inflatePaths, union, FillRule, JoinType, EndType } from 'cl
 import { buildShapePoints } from './shapes'
 import type { ShapeKind } from './shapes'
 import type { TreeState } from '../types/tree'
+import type { SymmetryMode } from '../types/constraints'
 
 interface Pt {
   x: number
@@ -41,6 +42,8 @@ function computeNode(
   scale: number,
   shape: ShapeKind,
   nodeId: string,
+  symmetryMode: SymmetryMode,
+  extraRotation: boolean,
 ): NodeResult | null {
   const node = tree.nodes[nodeId]
   const pos = positions[nodeId]
@@ -49,12 +52,12 @@ function computeNode(
   if (node.children.length === 0) {
     if (node.length == null) return null
     const radius = scale * node.length
-    const shapePoints = buildShapePoints(shape, pos.x, pos.y, radius)
+    const shapePoints = buildShapePoints(shape, pos.x, pos.y, radius, symmetryMode, extraRotation)
     return { footprint: [toClipperRing(shapePoints)], bands: [] }
   }
 
   const childResults = node.children
-    .map((childId) => computeNode(tree, positions, scale, shape, childId))
+    .map((childId) => computeNode(tree, positions, scale, shape, childId, symmetryMode, extraRotation))
     .filter((r): r is NodeResult => r !== null)
   if (childResults.length === 0) return null
 
@@ -93,19 +96,22 @@ export function computeRiverBands(
   positions: Record<string, { x: number; y: number }>,
   scale: number,
   shape: ShapeKind,
+  symmetryMode: SymmetryMode = 'none',
+  extraRotation = false,
 ): RiverBand[] {
   if (!tree.rootId) return []
-  return computeNode(tree, positions, scale, shape, tree.rootId)?.bands ?? []
+  return computeNode(tree, positions, scale, shape, tree.rootId, symmetryMode, extraRotation)?.bands ?? []
 }
 
 /** Renders a (possibly multi-ring, possibly disconnected) river band as one
  * SVG path — `fill-rule="evenodd"` on the consumer handles nested holes
- * regardless of winding direction. */
+ * regardless of winding direction. Flips y (the unit square is y-up
+ * internally, see `geometry/edgePin.ts`) so it renders right-side up. */
 export function ringsToPathD(rings: Rings, viewScale: number): string {
   return rings
     .map(
       (ring) =>
-        ring.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x * viewScale},${p.y * viewScale}`).join(' ') + ' Z',
+        ring.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x * viewScale},${(1 - p.y) * viewScale}`).join(' ') + ' Z',
     )
     .join(' ')
 }

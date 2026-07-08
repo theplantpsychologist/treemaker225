@@ -41,9 +41,24 @@ class BoundaryConstraint(CamelModel):
     corner: Optional[CornerId] = None
 
 
+class LockPoint(CamelModel):
+    x: float
+    y: float
+
+
+class LockConstraint(CamelModel):
+    """A third, orthogonal slot: freezes whatever positional degrees of
+    freedom the symmetry+boundary combo leaves free at a snapshot value —
+    independent of both other slots (see `LeafConstraint`)."""
+
+    kind: Literal["none", "locked"] = "none"
+    point: Optional[LockPoint] = None
+
+
 class LeafConstraint(CamelModel):
     symmetry: SymmetryConstraint = SymmetryConstraint()
     boundary: BoundaryConstraint = BoundaryConstraint()
+    locked: LockConstraint = LockConstraint()
 
 
 class Constraints(CamelModel):

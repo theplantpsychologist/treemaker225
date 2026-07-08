@@ -25,11 +25,14 @@ _INFEASIBLE = Resolution(False, None)
 
 
 def corner_position(corner: str) -> Point:
+    """The unit square is math-convention y-up (y=0 at the bottom, y=1 at
+    the top) — the frontend applies a single compensating y-flip at the
+    final screen-pixel conversion (see `geometry/edgePin.ts`)."""
     return {
-        "top_left": (0.0, 0.0),
-        "top_right": (1.0, 0.0),
-        "bottom_left": (0.0, 1.0),
-        "bottom_right": (1.0, 1.0),
+        "top_left": (0.0, 1.0),
+        "top_right": (1.0, 1.0),
+        "bottom_left": (0.0, 0.0),
+        "bottom_right": (1.0, 0.0),
     }[corner]
 
 
@@ -39,9 +42,9 @@ def edge_position(edge: str, s: float) -> Point:
     if edge == "right":
         return (1.0, s)
     if edge == "top":
-        return (s, 0.0)
-    if edge == "bottom":
         return (s, 1.0)
+    if edge == "bottom":
+        return (s, 0.0)
     raise ValueError(f"unknown edge {edge}")
 
 
@@ -53,8 +56,42 @@ def reflect_across_symmetry(p: Point, mode: SymmetryMode) -> Point:
     return p
 
 
+def mirror_edge(mode: SymmetryMode, edge: str) -> str:
+    """Line-for-line port of `mirrorEdge` in geometry/symmetry.ts."""
+    if mode == SymmetryMode.BOOK:
+        if edge == "left":
+            return "right"
+        if edge == "right":
+            return "left"
+        return edge
+    if mode == SymmetryMode.DIAGONAL:
+        return {"top": "right", "right": "top", "bottom": "left", "left": "bottom"}[edge]
+    return edge
+
+
+def mirror_corner(mode: SymmetryMode, corner: str) -> str:
+    """Line-for-line port of `mirrorCorner` in geometry/symmetry.ts."""
+    if mode == SymmetryMode.BOOK:
+        return {
+            "top_left": "top_right",
+            "top_right": "top_left",
+            "bottom_left": "bottom_right",
+            "bottom_right": "bottom_left",
+        }[corner]
+    if mode == SymmetryMode.DIAGONAL:
+        if corner == "top_left":
+            return "bottom_right"
+        if corner == "bottom_right":
+            return "top_left"
+        return corner
+    return corner
+
+
 def _diagonal_corner(edge: str) -> Point:
-    return (0.0, 0.0) if edge in ("top", "left") else (1.0, 1.0)
+    """A pin_edge + diagonal pin_symmetry combo collapses to wherever that
+    edge meets the line x=y — see `diagonalCorner` in
+    constraintResolution.ts for the y-up convention this assumes."""
+    return (1.0, 1.0) if edge in ("top", "right") else (0.0, 0.0)
 
 
 def _on_symmetry_line(mode: SymmetryMode, p: Point) -> bool:
@@ -65,7 +102,7 @@ def _on_symmetry_line(mode: SymmetryMode, p: Point) -> bool:
     return True
 
 
-def resolve_leaf_constraint(mode: SymmetryMode, constraint: LeafConstraint) -> Resolution:
+def _resolve_symmetry_boundary(mode: SymmetryMode, constraint: LeafConstraint) -> Resolution:
     """See `resolveLeafConstraint` in constraintResolution.ts for the full
     derivation of each case."""
     pinned_to_symmetry = constraint.symmetry.kind == "pin_symmetry"
@@ -87,6 +124,23 @@ def resolve_leaf_constraint(mode: SymmetryMode, constraint: LeafConstraint) -> R
         return Resolution(True, _diagonal_corner(boundary.edge))
 
     return _FEASIBLE_FREE
+
+
+def resolve_leaf_constraint(mode: SymmetryMode, constraint: LeafConstraint) -> Resolution:
+    """A `locked` slot overrides symmetry+boundary resolution entirely — it
+    freezes whatever DOF they leave free at a snapshot value, so a locked
+    leaf is always fully fixed regardless of its other two slots."""
+    if constraint.locked.kind == "locked":
+        return Resolution(True, (constraint.locked.point.x, constraint.locked.point.y))
+    return _resolve_symmetry_boundary(mode, constraint)
+
+
+def is_fully_fixed_by_symmetry_boundary(mode: SymmetryMode, constraint: LeafConstraint) -> bool:
+    """Whether the leaf is already fully fixed by symmetry+boundary alone,
+    ignoring any existing lock — used to decide whether locking it would
+    freeze any actual remaining freedom."""
+    res = _resolve_symmetry_boundary(mode, constraint)
+    return res.feasible and res.point is not None
 
 
 class ResolvedPointEntry(NamedTuple):

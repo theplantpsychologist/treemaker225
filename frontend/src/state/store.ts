@@ -12,6 +12,7 @@ import {
   collectResolvedPoints,
   findAnyCollision,
   findPointCollision,
+  isFullyFixedBySymmetryBoundary,
   resolveLeafConstraint,
 } from '../geometry/constraintResolution'
 import {
@@ -22,8 +23,13 @@ import {
   setEdgeLength as setEdgeLengthAction,
 } from './actions/treeActions'
 import {
+  boundaryEquals,
+  mirrorBoundary,
+  pruneLeafConstraint,
   withClearedBoundary,
+  withClearedLock,
   withClearedSymmetry,
+  withLocked,
   withPair,
   withPinCorner,
   withPinEdge,
@@ -81,6 +87,8 @@ interface AppState {
   pinToCorner: (leafId: string, corner: CornerId) => void
   clearSymmetryConstraint: (leafId: string) => void
   clearBoundaryConstraint: (leafId: string) => void
+  toggleLock: (leafId: string) => void
+  setLockedPosition: (leafId: string, x: number, y: number) => void
   clearConstraintError: () => void
   moveFlap: (id: string, x: number, y: number) => void
   snapFlap: (id: string) => void
@@ -193,7 +201,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   addChildAt: (parentId, x, y) => {
     get().pushUndoSnapshot()
     const { tree } = addChildNode(get().tree, parentId, x, y)
-    set({ tree })
+    // The parent just gained a child, so if it was a leaf carrying a
+    // constraint, that constraint no longer makes sense — prune it rather
+    // than leave a dangling reference the backend would reject at solve time.
+    const { constraints, warning } = pruneLeafConstraint(get().constraints, parentId)
+    set({ tree, constraints, uiError: warning ?? get().uiError })
   },
 
   deleteActiveNode: () => {
@@ -206,18 +218,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     get().pushUndoSnapshot()
-    // Only leaves ever carry a constraint, but this is harmless (a no-op
-    // delete) for a removed branch/root/degree-2 id too.
-    const perLeaf = { ...state.constraints.perLeaf }
-    for (const [leafId, c] of Object.entries(perLeaf)) {
-      if (c.symmetry.kind === 'pair' && c.symmetry.pairedWith === result.deletedId) {
-        perLeaf[leafId] = { ...c, symmetry: { kind: 'none' } }
-      }
-    }
-    delete perLeaf[result.deletedId]
+    const { constraints } = pruneLeafConstraint(state.constraints, result.deletedId)
     set({
       tree: result.tree,
-      constraints: { ...state.constraints, perLeaf },
+      constraints,
       activeParentId: null,
       selectedEdgeId: null,
       uiError: null,
@@ -287,8 +291,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.constraints.symmetryMode === 'none') return
     const aBoundary = (state.constraints.perLeaf[aId] ?? NO_LEAF_CONSTRAINT).boundary
     const bBoundary = (state.constraints.perLeaf[bId] ?? NO_LEAF_CONSTRAINT).boundary
-    if (aBoundary.kind !== 'none' && bBoundary.kind !== 'none') {
-      set({ constraintError: 'Only one flap in a pair can be pinned to an edge or corner.', pairingSourceId: null })
+    // A pair's boundary pin is one logical constraint mirrored onto both
+    // sides (see withPair) — if both already carry independent pins from
+    // before pairing, they must already agree, or pairing is rejected.
+    if (
+      aBoundary.kind !== 'none' &&
+      bBoundary.kind !== 'none' &&
+      !boundaryEquals(bBoundary, mirrorBoundary(state.constraints.symmetryMode, aBoundary))
+    ) {
+      set({
+        constraintError: 'Pairing two flaps that already have different edge/corner pins is not supported — clear one first.',
+        pairingSourceId: null,
+      })
       return
     }
     const nextConstraints = withPair(state.constraints, aId, bId)
@@ -334,13 +348,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     const nextConstraints = withPinEdge(state.constraints, leafId, edge)
-    if (res.point && findPointCollision(collectResolvedPoints(state.tree, nextConstraints), res.point, leafId)) {
+    // A full collision sweep (not just this leaf's own point) also catches a
+    // paired leaf's mirrored pin landing on top of a third flap — or, under
+    // diagonal symmetry, on top of its own partner.
+    if (findAnyCollision(collectResolvedPoints(state.tree, nextConstraints))) {
       set({ constraintError: 'That position is already occupied by another flap.', pinTargetMode: null })
       return
     }
     get().pushUndoSnapshot()
     set({ constraints: nextConstraints, pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
+    if (current.symmetry.kind === 'pair') get().snapFlap(current.symmetry.pairedWith)
   },
 
   pinToCorner: (leafId, corner) => {
@@ -353,13 +371,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     const nextConstraints = withPinCorner(state.constraints, leafId, corner)
-    if (res.point && findPointCollision(collectResolvedPoints(state.tree, nextConstraints), res.point, leafId)) {
+    if (findAnyCollision(collectResolvedPoints(state.tree, nextConstraints))) {
       set({ constraintError: 'That corner is already occupied by another flap.', pinTargetMode: null })
       return
     }
     get().pushUndoSnapshot()
     set({ constraints: nextConstraints, pinTargetMode: null, constraintError: null })
     get().snapFlap(leafId)
+    if (current.symmetry.kind === 'pair') get().snapFlap(current.symmetry.pairedWith)
   },
 
   clearSymmetryConstraint: (leafId) => {
@@ -369,9 +388,44 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearBoundaryConstraint: (leafId) => {
+    const current = get().constraints.perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
     get().pushUndoSnapshot()
     set({ constraints: withClearedBoundary(get().constraints, leafId) })
     get().snapFlap(leafId)
+    if (current.symmetry.kind === 'pair') get().snapFlap(current.symmetry.pairedWith)
+  },
+
+  toggleLock: (leafId) => {
+    const state = get()
+    const current = state.constraints.perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
+    if (current.locked.kind === 'locked') {
+      get().pushUndoSnapshot()
+      set({ constraints: withClearedLock(state.constraints, leafId) })
+      return
+    }
+    // Only offered when the leaf isn't already fully fixed by symmetry+
+    // boundary alone (locking it would freeze nothing new), and — for a
+    // pair — only on the lexicographic leader, since the follower's
+    // position is always fully derived via reflection regardless.
+    if (isFullyFixedBySymmetryBoundary(state.constraints.symmetryMode, current)) return
+    if (current.symmetry.kind === 'pair' && leafId > current.symmetry.pairedWith) return
+    const pos = state.packing?.positions[leafId]
+    if (!pos) return
+    get().pushUndoSnapshot()
+    set({ constraints: withLocked(state.constraints, leafId, pos) })
+  },
+
+  /** Numeric x/y edits on an already-locked leaf must update the frozen
+   * point itself (not just `packing.positions`) — otherwise `moveFlap`'s
+   * usual constraint projection would just snap straight back to the old
+   * locked point, ignoring the typed value entirely. */
+  setLockedPosition: (leafId, x, y) => {
+    const state = get()
+    const current = state.constraints.perLeaf[leafId]
+    if (!current || current.locked.kind !== 'locked') return
+    const point = { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) }
+    set({ constraints: withLocked(state.constraints, leafId, point) })
+    get().moveFlap(leafId, point.x, point.y)
   },
 
   clearConstraintError: () => set({ constraintError: null }),
@@ -450,7 +504,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportSession: () => {
     const state = get()
     const session: SavedSession = {
-      version: 2,
+      version: 3,
       tree: state.tree,
       constraints: state.constraints,
       hyperparams: state.hyperparams,

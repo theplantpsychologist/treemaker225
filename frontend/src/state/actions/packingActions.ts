@@ -20,6 +20,7 @@ export function projectForConstraints(
   symmetryMode: ConstraintsState['symmetryMode'],
   raw: Point,
 ): Point {
+  if (constraint.locked.kind === 'locked') return constraint.locked.point
   const afterSymmetry = constraint.symmetry.kind === 'pin_symmetry' ? projectOntoLine(symmetryMode, raw) : raw
   switch (constraint.boundary.kind) {
     case 'pin_edge':

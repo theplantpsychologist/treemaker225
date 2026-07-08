@@ -1,6 +1,5 @@
 import { useAppStore } from '../../state/store'
 import { SymmetryModeSelector } from './SymmetryModeSelector'
-import { ShapeSelector } from './ShapeSelector'
 import { ScaleSlider } from './ScaleSlider'
 import { SettingsModal } from './SettingsModal'
 import './PackingToolbar.css'
@@ -13,7 +12,6 @@ export function PackingToolbar() {
   return (
     <div className="packing-toolbar">
       <SymmetryModeSelector />
-      <ShapeSelector />
       <ScaleSlider />
       <button className="solve-button" onClick={() => void runSolve()} disabled={solving || !tree.rootId}>
         {solving ? 'Solving…' : 'Solve'}

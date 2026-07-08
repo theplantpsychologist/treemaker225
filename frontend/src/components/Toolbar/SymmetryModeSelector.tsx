@@ -6,9 +6,9 @@ import bookIcon from '../../assets/book_sym.svg'
 import diagIcon from '../../assets/diag_sym.svg'
 
 const OPTIONS: { value: SymmetryMode; label: string; icon: string }[] = [
-  { value: 'none', label: 'No symmetry', icon: noneIcon },
-  { value: 'book', label: 'Book symmetry (mirror across x=0.5)', icon: bookIcon },
   { value: 'diagonal', label: 'Diagonal symmetry (mirror across y=x)', icon: diagIcon },
+  { value: 'book', label: 'Book symmetry (mirror across x=0.5)', icon: bookIcon },
+  { value: 'none', label: 'No symmetry', icon: noneIcon },
 ]
 
 export function SymmetryModeSelector() {

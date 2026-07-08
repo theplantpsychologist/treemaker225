@@ -1,11 +1,14 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../state/store'
 import type { LeafConstraint } from '../../types/constraints'
 import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
+import { axisFreedom, collectResolvedPoints, isFullyFixedBySymmetryBoundary } from '../../geometry/constraintResolution'
 import { IconButton } from '../icons/IconButton'
 import pinSymmetryIcon from '../../assets/pin_symmetry.svg'
 import pairIcon from '../../assets/pair.svg'
 import pinEdgeIcon from '../../assets/pin_edge.svg'
 import pinCornerIcon from '../../assets/pin_corner.svg'
+import lockIcon from '../../assets/lock.svg'
 import clearIcon from '../../assets/clear.svg'
 import './Inspector.css'
 
@@ -23,13 +26,50 @@ function boundaryLabel(constraint: LeafConstraint) {
   return 'none'
 }
 
+/** A live-updating numeric field that tolerates in-progress text (a trailing
+ * "." or "-") without fighting the user's typing, but commits as soon as the
+ * text parses to a finite number — and resyncs from external position
+ * changes (drag, switching flaps) when not actively equal to what it last
+ * committed itself. */
+function NumberField({ value, disabled, onCommit }: { value: number; disabled: boolean; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(() => value.toFixed(4))
+  const lastCommitted = useRef(value)
+  useEffect(() => {
+    if (Math.abs(lastCommitted.current - value) > 1e-9) {
+      setText(value.toFixed(4))
+      lastCommitted.current = value
+    }
+  }, [value])
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      className="inspector-position-input"
+      value={text}
+      disabled={disabled}
+      onChange={(e) => {
+        const v = e.target.value
+        setText(v)
+        const parsed = Number(v)
+        if (v.trim() !== '' && Number.isFinite(parsed)) {
+          lastCommitted.current = parsed
+          onCommit(parsed)
+        }
+      }}
+    />
+  )
+}
+
 export function Inspector() {
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
   const tree = useAppStore((s) => s.tree)
   const packing = useAppStore((s) => s.packing)
-  const symmetryMode = useAppStore((s) => s.constraints.symmetryMode)
-  const constraint = useAppStore((s) =>
-    s.selectedEdgeId ? (s.constraints.perLeaf[s.selectedEdgeId] ?? NO_LEAF_CONSTRAINT) : NO_LEAF_CONSTRAINT,
+  const constraints = useAppStore((s) => s.constraints)
+  const symmetryMode = constraints.symmetryMode
+  const constraint = selectedEdgeId ? (constraints.perLeaf[selectedEdgeId] ?? NO_LEAF_CONSTRAINT) : NO_LEAF_CONSTRAINT
+  const resolvedFixedLeafIds = useMemo(
+    () => new Set(collectResolvedPoints(tree, constraints).map((e) => e.leafId)),
+    [tree, constraints],
   )
   const pairingSourceId = useAppStore((s) => s.pairingSourceId)
   const armPairing = useAppStore((s) => s.armPairing)
@@ -42,6 +82,9 @@ export function Inspector() {
   const pinToSymmetry = useAppStore((s) => s.pinToSymmetry)
   const clearSymmetryConstraint = useAppStore((s) => s.clearSymmetryConstraint)
   const clearBoundaryConstraint = useAppStore((s) => s.clearBoundaryConstraint)
+  const toggleLock = useAppStore((s) => s.toggleLock)
+  const moveFlap = useAppStore((s) => s.moveFlap)
+  const setLockedPosition = useAppStore((s) => s.setLockedPosition)
   const selectEdge = useAppStore((s) => s.selectEdge)
 
   const errorBanner = constraintError ? (
@@ -76,6 +119,25 @@ export function Inspector() {
     const node = tree.nodes[selectedEdgeId]
     const isLeaf = node.parentId !== null && node.children.length === 0
     const width = packing && node.length != null ? packing.scale * node.length : null
+    const pos = packing?.positions[selectedEdgeId]
+    const isLocked = constraint.locked.kind === 'locked'
+    const freedom = isLocked ? { x: 'free' as const, y: 'free' as const } : axisFreedom(symmetryMode, constraint)
+    const isPositionBlocked = !isLocked && resolvedFixedLeafIds.has(selectedEdgeId)
+    const xFixed = isPositionBlocked || freedom.x === 'fixed'
+    const yFixed = isPositionBlocked || freedom.y === 'fixed'
+    const linked = !isPositionBlocked && freedom.x === 'linked'
+    const commitX = (v: number) => {
+      if (!pos) return
+      const y = linked ? v : pos.y
+      if (isLocked) setLockedPosition(selectedEdgeId, v, y)
+      else moveFlap(selectedEdgeId, v, y)
+    }
+    const commitY = (v: number) => {
+      if (!pos) return
+      const x = linked ? v : pos.x
+      if (isLocked) setLockedPosition(selectedEdgeId, x, v)
+      else moveFlap(selectedEdgeId, x, v)
+    }
     body = isLeaf ? (
       <div className="inspector-panel">
         <div className="inspector-panel-header">
@@ -84,7 +146,22 @@ export function Inspector() {
         </div>
 
         <div className="inspector-group">
-          <span className="inspector-group-label">symmetry: {symmetryLabel(constraint)}</span>
+          <span className="inspector-group-label">position</span>
+          <div className="inspector-position-fields">
+            <label>
+              x
+              <NumberField value={pos?.x ?? 0} disabled={!pos || xFixed} onCommit={commitX} />
+            </label>
+            <label>
+              y
+              <NumberField value={pos?.y ?? 0} disabled={!pos || yFixed} onCommit={commitY} />
+            </label>
+          </div>
+          {width != null && <span className="inspector-width">radius: {width.toFixed(4)}</span>}
+        </div>
+
+        <div className="inspector-group">
+          <span className="inspector-group-label">symmetry constraint: {symmetryLabel(constraint)}</span>
           <div className="inspector-group-buttons">
             <IconButton
               icon={pinSymmetryIcon}
@@ -110,7 +187,7 @@ export function Inspector() {
         </div>
 
         <div className="inspector-group">
-          <span className="inspector-group-label">boundary: {boundaryLabel(constraint)}</span>
+          <span className="inspector-group-label">boundary constraint: {boundaryLabel(constraint)}</span>
           <div className="inspector-group-buttons">
             <IconButton
               icon={pinEdgeIcon}
@@ -132,6 +209,23 @@ export function Inspector() {
             />
           </div>
         </div>
+
+        <div className="inspector-group">
+          <span className="inspector-group-label">{constraint.locked.kind === 'locked' ? 'locked in place' : 'not locked'}</span>
+          <div className="inspector-group-buttons">
+            <IconButton
+              icon={lockIcon}
+              label={constraint.locked.kind === 'locked' ? 'Unlock' : 'Lock in place'}
+              active={constraint.locked.kind === 'locked'}
+              disabled={
+                constraint.locked.kind !== 'locked' &&
+                (isFullyFixedBySymmetryBoundary(symmetryMode, constraint) ||
+                  (constraint.symmetry.kind === 'pair' && selectedEdgeId > constraint.symmetry.pairedWith))
+              }
+              onClick={() => toggleLock(selectedEdgeId)}
+            />
+          </div>
+        </div>
       </div>
     ) : (
       <div className="inspector-panel">
@@ -140,7 +234,7 @@ export function Inspector() {
           <IconButton icon={clearIcon} label="Deselect" onClick={() => selectEdge(null)} />
         </div>
         {width != null && <span className="inspector-width">width: {width.toFixed(4)}</span>}
-        <span className="inspector-hint">No constraints for a river.</span>
+        <span className="inspector-hint">No constraints applicable.</span>
       </div>
     )
   }

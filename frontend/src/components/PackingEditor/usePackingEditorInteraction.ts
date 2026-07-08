@@ -13,6 +13,11 @@ const CLICK_THRESHOLD = 4
  * floor (see `unitsPerPixel`) so the hit target never shrinks to nothing
  * when zoomed out. */
 const EDGE_HIT_FRACTION = 0.15
+/** Hard floor on a flap's radius while interactively resizing, in unit-
+ * square space (not pixel space, so not a `sizeTokens.ts` entry — it stays a
+ * fixed fraction of the paper regardless of zoom). Prevents a drag from
+ * shrinking a flap to nothing. */
+const MIN_FLAP_RADIUS_UNIT = 1 / 32
 
 type DragKind = 'move' | 'resizeFlap' | 'resizeRiver'
 
@@ -45,7 +50,9 @@ export function usePackingEditorInteraction(
   const packing = useAppStore((s) => s.packing)
   const constraints = useAppStore((s) => s.constraints)
   const tree = useAppStore((s) => s.tree)
-  const bases = useAppStore((s) => getBases(s.hyperparams.shape))
+  const bases = useAppStore((s) =>
+    getBases(s.hyperparams.shape, s.constraints.symmetryMode, s.hyperparams.hexagonExtraRotation),
+  )
   /** Leaves whose position is fully fixed — either directly (pin_corner) or
    * because a paired partner's own pin mirrors onto them — and therefore
    * must not be interactively dragged (see `moveFlapPositions`'s docstring
@@ -71,7 +78,9 @@ export function usePackingEditorInteraction(
       pt.y = e.clientY
       const ctm = svg.getScreenCTM()!.inverse()
       const transformed = pt.matrixTransform(ctm)
-      return { x: transformed.x / VIEW_SIZE, y: transformed.y / VIEW_SIZE }
+      // The unit square is y-up internally (see geometry/edgePin.ts) but
+      // screen pixels are y-down, so invert the same flip rendering applies.
+      return { x: transformed.x / VIEW_SIZE, y: 1 - transformed.y / VIEW_SIZE }
     },
     [svgRef],
   )
@@ -189,8 +198,8 @@ export function usePackingEditorInteraction(
         }
       } else if (ds.kind === 'resizeFlap' && ds.center && ds.dir) {
         const t = (p.x - ds.center.x) * ds.dir.x + (p.y - ds.center.y) * ds.dir.y
-        const radius = t * maxProjection(ds.dir, bases)
-        setEdgeLength(ds.nodeId, Math.max(radius / packing.scale, 1e-6))
+        const radius = Math.max(t * maxProjection(ds.dir, bases), MIN_FLAP_RADIUS_UNIT)
+        setEdgeLength(ds.nodeId, radius / packing.scale)
       } else if (ds.kind === 'resizeRiver' && ds.p1 && ds.p2) {
         const dx = ds.p2.x - ds.p1.x
         const dy = ds.p2.y - ds.p1.y

@@ -27,6 +27,9 @@ def _own_spec(leaf_id: str, constraint: LeafConstraint, mode: SymmetryMode, var_
     ignoring pairing (a pair leader still resolves via this — `pin_symmetry`
     and `pair` are mutually exclusive values of the same slot, so a pair
     member's own resolution only ever depends on its boundary slot)."""
+    if constraint.locked.kind == "locked":
+        p = constraint.locked.point
+        return LeafVarSpec("locked_fixed", var_start, 0, fixed_point=(p.x, p.y))
     boundary = constraint.boundary
     if boundary.kind == "pin_corner":
         return LeafVarSpec("corner_fixed", var_start, 0, fixed_point=corner_position(boundary.corner))
@@ -63,16 +66,13 @@ class VariablePlan:
                 partner_c = constraints.per_leaf.get(partner) or LeafConstraint()
                 pair_seen.add(leaf_id)
                 pair_seen.add(partner)
-                # Whichever side actually carries a boundary pin (if either)
-                # must be the leader — validation upstream guarantees at
-                # most one side does. With neither pinned, fall back to a
-                # stable lexicographic tie-break.
-                if constraint.boundary.kind != "none":
-                    leader_id, follower_id = leaf_id, partner
-                elif partner_c.boundary.kind != "none":
-                    leader_id, follower_id = partner, leaf_id
-                else:
-                    leader_id, follower_id = (leaf_id, partner) if leaf_id < partner else (partner, leaf_id)
+                # Both sides now carry equivalent (mirrored) boundary pins
+                # by construction (see the pair-aware setters in
+                # frontend/src/state/actions/constraintActions.ts and the
+                # matching validation in solve_service.py), so either side's
+                # own resolution is equally valid as leader — pick a stable
+                # lexicographic tie-break.
+                leader_id, follower_id = (leaf_id, partner) if leaf_id < partner else (partner, leaf_id)
 
                 leader_constraint = constraint if leader_id == leaf_id else partner_c
                 leader_spec = _own_spec(leader_id, leader_constraint, self.symmetry_mode, idx)
@@ -107,7 +107,7 @@ class VariablePlan:
                 positions[leaf_id] = (0.5, t) if self.symmetry_mode == SymmetryMode.BOOK else (t, t)
             elif spec.kind == "edge_free":
                 positions[leaf_id] = edge_position(spec.edge, float(x[spec.var_start]))
-            elif spec.kind in ("corner_fixed", "resolved_fixed"):
+            elif spec.kind in ("corner_fixed", "resolved_fixed", "locked_fixed"):
                 positions[leaf_id] = spec.fixed_point
         for leaf_id in self.leaf_ids:
             spec = self.specs[leaf_id]

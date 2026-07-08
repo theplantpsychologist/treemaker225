@@ -3,8 +3,16 @@
   --text-h: #08060d;
   --bg: #fff;
   --border: #e5e4e7;
+  --panel-bg: #ffffff;
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
+
+  /* Overwritten at runtime per the active packing shape — see
+     hooks/useShapeTheme.ts and constants/shapeTheme.ts. These are just the
+     first-paint fallback (octagon, the default shape). */
+  --accent: #16a34a;
+  --flap-color: #16a34a;
+  --river-color: #4ade80;
 
   font: 14px/145% var(--sans);
   color: var(--text);
@@ -13,6 +21,19 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+[data-theme='dark'] {
+  --text: #e4e4e7;
+  --text-h: #fafafa;
+  --bg: #18181b;
+  --border: #3f3f46;
+  --panel-bg: #27272a;
+}
+
+input[type='range'],
+input[type='checkbox'] {
+  accent-color: var(--accent);
 }
 
 * {

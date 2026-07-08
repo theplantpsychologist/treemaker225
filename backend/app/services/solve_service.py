@@ -4,7 +4,13 @@ from typing import Set
 
 import networkx as nx
 
-from app.core.constraint_resolution import collect_resolved_points, find_any_collision, resolve_leaf_constraint
+from app.core.constraint_resolution import (
+    collect_resolved_points,
+    find_any_collision,
+    mirror_corner,
+    mirror_edge,
+    resolve_leaf_constraint,
+)
 from app.core.layout import solve_internal_layout
 from app.core.packing import run_circle_restart, run_polygon_restart
 from app.core.shapes import get_bases
@@ -28,11 +34,27 @@ def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
             if not partner_c or partner_c.symmetry.kind != "pair" or partner_c.symmetry.paired_with != leaf_id:
                 raise ValueError(f"'{leaf_id}' and '{partner}' must be mutually and exclusively paired")
             if c.boundary.kind != "none" and partner_c.boundary.kind != "none":
-                raise ValueError(f"only one of '{leaf_id}'/'{partner}' may have an edge/corner pin")
+                mirrors = False
+                if c.boundary.kind == "pin_edge" and partner_c.boundary.kind == "pin_edge":
+                    mirrors = mirror_edge(constraints.symmetry_mode, c.boundary.edge) == partner_c.boundary.edge
+                elif c.boundary.kind == "pin_corner" and partner_c.boundary.kind == "pin_corner":
+                    mirrors = mirror_corner(constraints.symmetry_mode, c.boundary.corner) == partner_c.boundary.corner
+                if not mirrors:
+                    raise ValueError(
+                        f"'{leaf_id}' and '{partner}' have edge/corner pins that are not mirrors of each other"
+                    )
         if c.boundary.kind == "pin_edge" and c.boundary.edge is None:
             raise ValueError(f"'{leaf_id}' has a pin_edge constraint with no edge specified")
         if c.boundary.kind == "pin_corner" and c.boundary.corner is None:
             raise ValueError(f"'{leaf_id}' has a pin_corner constraint with no corner specified")
+        if c.locked.kind == "locked":
+            if c.locked.point is None:
+                raise ValueError(f"'{leaf_id}' has a locked constraint with no point specified")
+            if c.symmetry.kind == "pair" and leaf_id > c.symmetry.paired_with:
+                raise ValueError(
+                    f"'{leaf_id}' is the non-leader half of a pair and can't be locked independently "
+                    f"of '{c.symmetry.paired_with}'"
+                )
         if not resolve_leaf_constraint(constraints.symmetry_mode, c).feasible:
             raise ValueError(
                 f"'{leaf_id}' combines symmetry and boundary constraints that can never be satisfied together"
@@ -89,7 +111,7 @@ def solve(req: SolveRequest) -> SolveResponse:
     circle_results.sort(key=lambda r: r[1], reverse=True)
     best_circle_scale = circle_results[0][1]
 
-    bases = get_bases(hp.shape)
+    bases = get_bases(hp.shape, req.constraints.symmetry_mode, hp.hexagon_extra_rotation)
     best_scale_refined = None
     if bases is not None:
         top = circle_results[: max(1, hp.n_refine)]

@@ -4,13 +4,7 @@ import { useAppStore } from '../../state/store'
 import { buildShapePoints } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeOverlapAreas } from '../../geometry/overlap'
-import {
-  COLOR_CORNER,
-  COLOR_EDGE,
-  COLOR_OVERLAP,
-  COLOR_UNCONSTRAINED,
-  colorForConstraint,
-} from '../../constants/constraintColors'
+import { COLOR_OVERLAP } from '../../constants/constraintColors'
 import { isPackingStale } from '../../geometry/topology'
 import { isPointOccupied } from '../../geometry/constraintResolution'
 import { cornerPosition } from '../../geometry/edgePin'
@@ -26,8 +20,10 @@ import {
 } from '../../constants/sizeTokens'
 import './PackingEditor.css'
 
+/** The unit square is y-up internally (see geometry/edgePin.ts); flip y so
+ * it renders right-side up in screen space. */
 function toPointsAttr(points: [number, number][], scale: number): string {
-  return points.map(([x, y]) => `${x * scale},${y * scale}`).join(' ')
+  return points.map(([x, y]) => `${x * scale},${(1 - y) * scale}`).join(' ')
 }
 
 interface FlapInfo {
@@ -35,7 +31,9 @@ interface FlapInfo {
   center: { x: number; y: number }
   radius: number
   points: string
-  color: string
+  /** No constraint at all (symmetry/boundary/locked all 'none') — rendered
+   * desaturated (see `.packing-flap.unconstrained` in PackingEditor.css). */
+  constrained: boolean
 }
 
 interface RiverInfo {
@@ -69,6 +67,7 @@ export function PackingEditorCanvas() {
   const tree = useAppStore((s) => s.tree)
   const packing = useAppStore((s) => s.packing)
   const shape = useAppStore((s) => s.hyperparams.shape)
+  const hexagonExtraRotation = useAppStore((s) => s.hyperparams.hexagonExtraRotation)
   const clipToSquare = useAppStore((s) => s.clipToSquare)
   const constraints = useAppStore((s) => s.constraints)
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
@@ -118,7 +117,7 @@ export function PackingEditorCanvas() {
     const riverList: RiverInfo[] = []
     if (!packing) return { flaps: flapList, rivers: riverList }
 
-    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape)
+    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, hexagonExtraRotation)
     const pathByNodeId = new Map(bands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
 
     for (const node of Object.values(tree.nodes)) {
@@ -129,13 +128,13 @@ export function PackingEditorCanvas() {
 
       const width = packing.scale * node.length
       if (node.children.length === 0) {
-        const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width)
+        const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width, constraints.symmetryMode, hexagonExtraRotation)
         flapList.push({
           key: node.id,
           center: childPos,
           radius: width,
           points: toPointsAttr(shapePoints, VIEW_SIZE),
-          color: colorForConstraint(node.id, constraints.perLeaf[node.id]),
+          constrained: constraints.perLeaf[node.id] != null,
         })
       } else {
         const pathD = pathByNodeId.get(node.id)
@@ -150,12 +149,12 @@ export function PackingEditorCanvas() {
       }
     }
     return { flaps: flapList, rivers: riverList }
-  }, [tree, packing, constraints, shape])
+  }, [tree, packing, constraints, shape, hexagonExtraRotation])
 
   const overlapAreas = useMemo(() => {
     if (!packing) return []
-    return computeOverlapAreas(tree, packing.positions, packing.scale, shape)
-  }, [tree, packing, shape])
+    return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, hexagonExtraRotation)
+  }, [tree, packing, shape, constraints.symmetryMode, hexagonExtraRotation])
 
   const stale = useMemo(() => isPackingStale(tree, packing), [tree, packing])
 
@@ -196,7 +195,10 @@ export function PackingEditorCanvas() {
           <line className="symmetry-line" x1={VIEW_SIZE / 2} y1={0} x2={VIEW_SIZE / 2} y2={VIEW_SIZE} />
         )}
         {constraints.symmetryMode === 'diagonal' && (
-          <line className="symmetry-line" x1={0} y1={0} x2={VIEW_SIZE} y2={VIEW_SIZE} />
+          // The line x=y in the y-up unit square runs bottom-left to
+          // top-right — after the render-time y-flip that's screen (0,
+          // VIEW_SIZE) to (VIEW_SIZE, 0).
+          <line className="symmetry-line" x1={0} y1={VIEW_SIZE} x2={VIEW_SIZE} y2={0} />
         )}
 
         <g clipPath={clipToSquare ? 'url(#packing-square-clip)' : undefined}>
@@ -204,7 +206,6 @@ export function PackingEditorCanvas() {
             <g key={`river-${r.key}`}>
               <path
                 className={'packing-river' + (r.key === selectedEdgeId ? ' selected' : '')}
-                style={{ fill: `${COLOR_UNCONSTRAINED}33`, stroke: COLOR_UNCONSTRAINED }}
                 fillRule="evenodd"
                 d={r.pathD}
                 onPointerDown={(e) => beginResizeRiver(r.nodeId, r.p1, r.p2, r.key === selectedEdgeId, e)}
@@ -215,15 +216,18 @@ export function PackingEditorCanvas() {
           {flaps.map((f) => (
             <g key={`flap-${f.key}`}>
               <polygon
-                className={'packing-flap' + (f.key === selectedEdgeId ? ' selected' : '')}
-                style={{ stroke: f.color, fill: `${f.color}26` }}
+                className={
+                  'packing-flap' +
+                  (f.key === selectedEdgeId ? ' selected' : '') +
+                  (f.constrained ? '' : ' unconstrained')
+                }
                 points={f.points}
                 onPointerDown={(e) => beginFlapPointerDown(f.key, f.center, f.radius, f.key === selectedEdgeId, e)}
               />
               <circle
                 className="center-dot"
                 cx={f.center.x * VIEW_SIZE}
-                cy={f.center.y * VIEW_SIZE}
+                cy={(1 - f.center.y) * VIEW_SIZE}
                 r={CENTER_DOT_RADIUS_PX * pan.pxToWorld}
               />
             </g>
@@ -249,7 +253,6 @@ export function PackingEditorCanvas() {
               <rect
                 key={`edge-handle-${edge}`}
                 className="pin-handle pin-handle-edge"
-                style={{ fill: `${COLOR_EDGE}55`, stroke: COLOR_EDGE }}
                 x={rect.x}
                 y={rect.y}
                 width={rect.width}
@@ -266,16 +269,17 @@ export function PackingEditorCanvas() {
             const size = CORNER_PIN_HANDLE_SIZE_PX * pan.pxToWorld
             const p = cornerPosition(corner)
             const occupied = isPointOccupied(tree, constraints, p, selectedEdgeId)
+            const screenX = p.x * VIEW_SIZE
+            const screenY = (1 - p.y) * VIEW_SIZE
             return (
               <rect
                 key={`corner-handle-${corner}`}
                 className={'pin-handle pin-handle-corner' + (occupied ? ' occupied' : '')}
-                style={{ fill: occupied ? '#e5e7eb' : `${COLOR_CORNER}33`, stroke: occupied ? '#9ca3af' : COLOR_CORNER }}
-                x={p.x * VIEW_SIZE - size / 2}
-                y={p.y * VIEW_SIZE - size / 2}
+                x={screenX - size / 2}
+                y={screenY - size / 2}
                 width={size}
                 height={size}
-                transform={`rotate(45 ${p.x * VIEW_SIZE} ${p.y * VIEW_SIZE})`}
+                transform={`rotate(45 ${screenX} ${screenY})`}
                 onPointerDown={(e) => (occupied ? undefined : e.stopPropagation())}
                 onClick={() => (occupied ? undefined : pinToCorner(selectedEdgeId, corner))}
               />
