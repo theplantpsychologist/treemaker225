@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
-import { buildShapePoints } from '../../geometry/shapes'
+import { buildShapePoints, extraRotationFor } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeOverlapAreas } from '../../geometry/overlap'
+import { computeActivePaths } from '../../geometry/activePaths'
 import { COLOR_OVERLAP } from '../../constants/constraintColors'
 import { isPackingStale } from '../../geometry/topology'
 import { isPointOccupied } from '../../geometry/constraintResolution'
@@ -24,6 +25,10 @@ import './PackingEditor.css'
  * it renders right-side up in screen space. */
 function toPointsAttr(points: [number, number][], scale: number): string {
   return points.map(([x, y]) => `${x * scale},${(1 - y) * scale}`).join(' ')
+}
+
+function toScreen(x: number, y: number): [number, number] {
+  return [x * VIEW_SIZE, (1 - y) * VIEW_SIZE]
 }
 
 interface FlapInfo {
@@ -67,7 +72,10 @@ export function PackingEditorCanvas() {
   const shape = useAppStore((s) => s.hyperparams.shape)
   const hexagonExtraRotation = useAppStore((s) => s.hyperparams.hexagonExtraRotation)
   const squareExtraRotation = useAppStore((s) => s.hyperparams.squareExtraRotation)
-  const extraRotation = shape === 'hexagon' ? hexagonExtraRotation : shape === 'square' ? squareExtraRotation : false
+  const dodecagonExtraRotation = useAppStore((s) => s.hyperparams.dodecagonExtraRotation)
+  const extraRotation = extraRotationFor(shape, hexagonExtraRotation, squareExtraRotation, dodecagonExtraRotation)
+  const activeSnapLengthTolerance = useAppStore((s) => s.hyperparams.activeSnapLengthTolerance)
+  const activeSnapAngleTolerance = useAppStore((s) => s.hyperparams.activeSnapAngleTolerance)
   const clipToSquare = useAppStore((s) => s.clipToSquare)
   const constraints = useAppStore((s) => s.constraints)
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId)
@@ -162,6 +170,20 @@ export function PackingEditorCanvas() {
     return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
   }, [tree, packing, shape, constraints.symmetryMode, extraRotation])
 
+  const activePaths = useMemo(() => {
+    if (!packing) return []
+    return computeActivePaths(
+      tree,
+      packing.positions,
+      packing.scale,
+      shape,
+      constraints.symmetryMode,
+      extraRotation,
+      activeSnapLengthTolerance,
+      activeSnapAngleTolerance,
+    )
+  }, [tree, packing, shape, constraints.symmetryMode, extraRotation, activeSnapLengthTolerance, activeSnapAngleTolerance])
+
   const stale = useMemo(() => isPackingStale(tree, packing), [tree, packing])
   useEffect(() => {
     if (stale && !wasStale.current) setStaleDismissed(false)
@@ -212,6 +234,22 @@ export function PackingEditorCanvas() {
         )}
 
         <g clipPath={clipToSquare ? 'url(#packing-square-clip)' : undefined}>
+          {activePaths.map((p) =>
+            p.kind === 'active' ? (
+              (() => {
+                const [x1, y1] = toScreen(p.ax, p.ay)
+                const [x2, y2] = toScreen(p.bx, p.by)
+                return <line key={`active-${p.a}-${p.b}`} className="active-path" x1={x1} y1={y1} x2={x2} y2={y2} />
+              })()
+            ) : (
+              <polygon
+                key={`active-${p.a}-${p.b}`}
+                className="active-path-semi"
+                points={toPointsAttr(p.points, VIEW_SIZE)}
+              />
+            ),
+          )}
+
           {rivers.map((r) => (
             <g key={`river-${r.key}`}>
               <path

@@ -118,6 +118,29 @@
   pointer-events: none;
 }
 
+/* "Active path" — a bold line between two flap centers whose actual
+   distance is (near) the tree-implied tangency distance (see
+   geometry/activePaths.ts). Rendered underneath the flaps/rivers so it
+   reads as passing through them, not floating on top. */
+.active-path {
+  stroke: var(--active-path-color);
+  stroke-width: var(--sw-active-path);
+  fill: none;
+  pointer-events: none;
+}
+
+/* "Semi-active path" — the active path's angle isn't (within tolerance)
+   perpendicular to a polygon side, so instead of a straight line this draws
+   the dashed parallelogram decomposing the connection into the two flanking
+   allowed directions. */
+.active-path-semi {
+  stroke: var(--active-path-color);
+  stroke-width: var(--sw-active-path);
+  stroke-dasharray: var(--dash-active-path);
+  fill: none;
+  pointer-events: none;
+}
+
 .overlap-area {
   /* Fill comes from COLOR_OVERLAP via inline style (see
      PackingEditorCanvas) — a small overlap renders as a small red area. */

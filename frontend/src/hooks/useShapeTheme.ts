@@ -14,5 +14,6 @@ export function useShapeTheme(shape: ShapeKind): void {
     root.style.setProperty('--accent', theme.accent)
     root.style.setProperty('--flap-color', theme.flap)
     root.style.setProperty('--river-color', theme.river)
+    root.style.setProperty('--active-path-color', theme.activePath)
   }, [shape])
 }

@@ -21,39 +21,7 @@ export function SettingsModal() {
         createPortal(
           <div className="settings-modal-backdrop" onClick={() => setOpen(false)}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-              <h3>Advanced settings</h3>
-              <label className="settings-field" title="Number of random-restart circle-packing solves">
-                restarts
-                <input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={hyperparams.nRestarts}
-                  onChange={(e) => setHyperparams({ nRestarts: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="How many top circle-packing candidates get refined into the chosen shape">
-                refine
-                <input
-                  type="number"
-                  min={1}
-                  max={hyperparams.nRestarts}
-                  value={hyperparams.nRefine}
-                  disabled={!refines}
-                  onChange={(e) => setHyperparams({ nRefine: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Softmax smoothing factor for the shape's separating-axis constraint">
-                alpha
-                <input
-                  type="number"
-                  min={1}
-                  step={10}
-                  value={hyperparams.alpha}
-                  disabled={!refines}
-                  onChange={(e) => setHyperparams({ alpha: Number(e.target.value) })}
-                />
-              </label>
+              <h2>Settings</h2>
               <label
                 className="settings-field settings-checkbox"
                 title="Hide any part of a flap/river that spills past the paper square"
@@ -91,16 +59,52 @@ export function SettingsModal() {
                   rotate square 45°
                 </label>
               )}
-              <label className="settings-field" title="Optimizer used for every restart — SLSQP is the default; trust-constr can be more robust on large/hard trees">
-                method
-                <select
-                  value={hyperparams.solverMethod}
-                  onChange={(e) => setHyperparams({ solverMethod: e.target.value as SolverMethod })}
+              {hyperparams.shape === 'dodecagon' && (
+                <label
+                  className="settings-field settings-checkbox"
+                  title="Rotate the dodecagon 15 degrees — defaults on when diagonal symmetry is active, but can be toggled either way"
                 >
-                  <option value="slsqp">SLSQP</option>
-                  <option value="cobyla">COBYLA</option>
-                  <option value="trust-constr">trust-constr</option>
-                </select>
+                  <input
+                    type="checkbox"
+                    checked={hyperparams.dodecagonExtraRotation}
+                    onChange={(e) => setHyperparams({ dodecagonExtraRotation: e.target.checked })}
+                  />
+                  rotate dodecagon 15°
+                </label>
+              )}
+              <hr />
+              <h2>Packing solver</h2>
+              <label className="settings-field" title="Number of random-restart circle-packing solves">
+                restarts
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={hyperparams.nRestarts}
+                  onChange={(e) => setHyperparams({ nRestarts: Number(e.target.value) })}
+                />
+              </label>
+              <label className="settings-field" title="How many top circle-packing candidates get refined into the chosen shape">
+                refine
+                <input
+                  type="number"
+                  min={1}
+                  max={hyperparams.nRestarts}
+                  value={hyperparams.nRefine}
+                  disabled={!refines}
+                  onChange={(e) => setHyperparams({ nRefine: Number(e.target.value) })}
+                />
+              </label>
+              <label className="settings-field" title="Softmax smoothing factor for the shape's separating-axis constraint">
+                alpha
+                <input
+                  type="number"
+                  min={1}
+                  step={10}
+                  value={hyperparams.alpha}
+                  disabled={!refines}
+                  onChange={(e) => setHyperparams({ alpha: Number(e.target.value) })}
+                />
               </label>
               <label className="settings-field" title="Convergence tolerance passed to the optimizer — leave blank for scipy's default">
                 tol
@@ -123,6 +127,48 @@ export function SettingsModal() {
                   onChange={(e) => setHyperparams({ maxIter: e.target.value === '' ? null : Number(e.target.value) })}
                 />
               </label>
+              <label className="settings-field" title="Optimizer used for every restart — SLSQP is the default; trust-constr can be more robust on large/hard trees">
+                method
+                <select
+                  value={hyperparams.solverMethod}
+                  onChange={(e) => setHyperparams({ solverMethod: e.target.value as SolverMethod })}
+                >
+                  <option value="slsqp">SLSQP</option>
+                  <option value="cobyla">COBYLA</option>
+                  <option value="trust-constr">trust-constr</option>
+                </select>
+              </label>
+
+              <h2>Axial topology</h2>
+              <label
+                className="settings-field"
+                title="How far a flap pair's actual center distance may drift from the tree-implied tangency distance (as a fraction of it) and still be drawn as an active path"
+              >
+                Path length tolerance
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={hyperparams.activeSnapLengthTolerance}
+                  onChange={(e) => setHyperparams({ activeSnapLengthTolerance: Number(e.target.value) })}
+                />
+              </label>
+              {hyperparams.shape !== 'circle' && (
+                <label
+                  className="settings-field"
+                  title="How far (in degrees) an active path's angle may drift from the nearest shape-face-normal multiple and still render as a solid line instead of a dashed semi-active parallelogram"
+                >
+                  Path angle tolerance (°)
+                  <input
+                    type="number"
+                    min={0}
+                    max={45}
+                    step={1}
+                    value={hyperparams.activeSnapAngleTolerance}
+                    onChange={(e) => setHyperparams({ activeSnapAngleTolerance: Number(e.target.value) })}
+                  />
+                </label>
+              )}
               <button className="settings-done" onClick={() => setOpen(false)}>
                 Done
               </button>

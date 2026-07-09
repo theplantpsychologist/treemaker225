@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef } from 'react'
 import type { RefObject, PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
-import { getBases, maxProjection } from '../../geometry/shapes'
+import { extraRotationFor, getBases, maxProjection } from '../../geometry/shapes'
 import { collectResolvedPoints } from '../../geometry/constraintResolution'
 import { EDGE_HIT_TOLERANCE_MIN_PX } from '../../constants/sizeTokens'
 
@@ -49,12 +49,12 @@ export function usePackingEditorInteraction(
   const constraints = useAppStore((s) => s.constraints)
   const tree = useAppStore((s) => s.tree)
   const bases = useAppStore((s) => {
-    const extraRotation =
-      s.hyperparams.shape === 'hexagon'
-        ? s.hyperparams.hexagonExtraRotation
-        : s.hyperparams.shape === 'square'
-          ? s.hyperparams.squareExtraRotation
-          : false
+    const extraRotation = extraRotationFor(
+      s.hyperparams.shape,
+      s.hyperparams.hexagonExtraRotation,
+      s.hyperparams.squareExtraRotation,
+      s.hyperparams.dodecagonExtraRotation,
+    )
     return getBases(s.hyperparams.shape, s.constraints.symmetryMode, extraRotation)
   })
   /** Leaves whose position is fully fixed — either directly (pin_corner) or

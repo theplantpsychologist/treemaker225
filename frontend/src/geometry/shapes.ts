@@ -14,9 +14,8 @@ function regularNgonBases(n: number, angleOffset = 0): [number, number][] {
 /** Preserved as the exact geometry the original octagon-only implementation used. */
 export const OCT_BASES: [number, number][] = regularNgonBases(8)
 
-export const SHAPE_BASES: Record<Exclude<ShapeKind, 'circle' | 'hexagon' | 'square'>, [number, number][]> = {
+export const SHAPE_BASES: Record<Exclude<ShapeKind, 'circle' | 'hexagon' | 'square' | 'dodecagon'>, [number, number][]> = {
   octagon: OCT_BASES,
-  dodecagon: regularNgonBases(12),
 }
 
 /** Square's angle offset is computed on demand, mirroring hexagon's pattern
@@ -33,6 +32,23 @@ function squareBases(extraRotation: boolean): [number, number][] {
   if (!cached) {
     cached = regularNgonBases(4, offset)
     squareBasesCache.set(offset, cached)
+  }
+  return cached
+}
+
+/** Dodecagon's angle offset is computed on demand, mirroring square's
+ * pattern — a manual `extraRotation` toggle rotating it 15°; any "default to
+ * rotated when diagonal symmetry is active" behavior lives at the call site
+ * (`state/store.ts`), not baked into this function. Cached per offset (only
+ * 2 combinations exist) for the same referential-stability reason
+ * `hexagonBases` is cached. */
+const dodecagonBasesCache = new Map<number, [number, number][]>()
+function dodecagonBases(extraRotation: boolean): [number, number][] {
+  const offset = extraRotation ? Math.PI / 12 : 0
+  let cached = dodecagonBasesCache.get(offset)
+  if (!cached) {
+    cached = regularNgonBases(12, offset)
+    dodecagonBasesCache.set(offset, cached)
   }
   return cached
 }
@@ -73,7 +89,23 @@ export function getBases(
   if (shape === 'circle') return null
   if (shape === 'hexagon') return hexagonBases(symmetryMode, extraRotation)
   if (shape === 'square') return squareBases(extraRotation)
+  if (shape === 'dodecagon') return dodecagonBases(extraRotation)
   return SHAPE_BASES[shape]
+}
+
+/** Picks whichever shape's own rotation-toggle hyperparam applies to
+ * `shape` (only hexagon/square/dodecagon have one) — the one three-way
+ * dispatch every call site needs, instead of duplicating this ternary. */
+export function extraRotationFor(
+  shape: ShapeKind,
+  hexagonExtraRotation: boolean,
+  squareExtraRotation: boolean,
+  dodecagonExtraRotation: boolean,
+): boolean {
+  if (shape === 'hexagon') return hexagonExtraRotation
+  if (shape === 'square') return squareExtraRotation
+  if (shape === 'dodecagon') return dodecagonExtraRotation
+  return false
 }
 
 /** Support-function radial multiplier: for a regular N-gon with unit

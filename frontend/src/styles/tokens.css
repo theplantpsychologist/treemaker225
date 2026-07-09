@@ -13,8 +13,10 @@
   --sw-regular: 2px;
   --sw-thick: 2.5px;
   --sw-selected: 3px;
+  --sw-active-path: 3px;
 
   --dash-symmetry: 6 4;
+  --dash-active-path: 5 4;
 }
 
 /*
@@ -31,6 +33,8 @@
 .pin-handle,
 .packing-river,
 .overlap-area,
-.center-dot {
+.center-dot,
+.active-path,
+.active-path-semi {
   vector-effect: non-scaling-stroke;
 }

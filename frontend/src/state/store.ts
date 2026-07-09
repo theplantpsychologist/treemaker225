@@ -330,13 +330,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
     // Nice default (not a hard lock, unlike hexagon's unconditional
-    // diagonal rotation) — square reads best rotated 45° under diagonal
+    // diagonal rotation) — square/dodecagon read best rotated under diagonal
     // symmetry, so suggest it the moment this combination newly appears.
     const hyperparams = get().hyperparams
-    const suggestSquareRotation = mode === 'diagonal' && prevMode !== 'diagonal' && hyperparams.shape === 'square'
+    const enteringDiagonal = mode === 'diagonal' && prevMode !== 'diagonal'
+    const suggestSquareRotation = enteringDiagonal && hyperparams.shape === 'square'
+    const suggestDodecagonRotation = enteringDiagonal && hyperparams.shape === 'dodecagon'
     set({
       constraints,
-      hyperparams: suggestSquareRotation ? { ...hyperparams, squareExtraRotation: true } : hyperparams,
+      hyperparams:
+        suggestSquareRotation || suggestDodecagonRotation
+          ? {
+              ...hyperparams,
+              ...(suggestSquareRotation ? { squareExtraRotation: true } : null),
+              ...(suggestDodecagonRotation ? { dodecagonExtraRotation: true } : null),
+            }
+          : hyperparams,
       pairingSourceId: null,
       constraintError:
         clearedLeafIds.length > 0
@@ -519,9 +528,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHyperparams: (patch) => {
     const state = get()
     const next = { ...state.hyperparams, ...patch }
-    // Same "nice default, not a lock" square-rotation suggestion as
-    // setSymmetryMode, mirrored here for the other direction of the same
-    // transition (switching TO square while diagonal is already active).
+    // Same "nice default, not a lock" rotation suggestion as setSymmetryMode,
+    // mirrored here for the other direction of the same transition
+    // (switching TO square/dodecagon while diagonal is already active).
     if (
       patch.shape === 'square' &&
       state.hyperparams.shape !== 'square' &&
@@ -529,6 +538,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       patch.squareExtraRotation === undefined
     ) {
       next.squareExtraRotation = true
+    }
+    if (
+      patch.shape === 'dodecagon' &&
+      state.hyperparams.shape !== 'dodecagon' &&
+      state.constraints.symmetryMode === 'diagonal' &&
+      patch.dodecagonExtraRotation === undefined
+    ) {
+      next.dodecagonExtraRotation = true
     }
     set({ hyperparams: next })
   },
