@@ -84,6 +84,8 @@ export function PackingEditorCanvas() {
   const cancelPinTarget = useAppStore((s) => s.cancelPinTarget)
   const pinToEdge = useAppStore((s) => s.pinToEdge)
   const pinToCorner = useAppStore((s) => s.pinToCorner)
+  const equalSourceId = useAppStore((s) => s.equalSourceId)
+  const cancelEqual = useAppStore((s) => s.cancelEqual)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
   const unitsPerPixel = pan.pxToWorld / VIEW_SIZE
   const { beginFlapPointerDown, selectRiver, onPointerMove, onPointerUp } =
@@ -93,12 +95,13 @@ export function PackingEditorCanvas() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (pinTargetMode) cancelPinTarget()
+        else if (equalSourceId) cancelEqual()
         else selectEdge(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [pinTargetMode, cancelPinTarget, selectEdge])
+  }, [pinTargetMode, cancelPinTarget, equalSourceId, cancelEqual, selectEdge])
 
   // Staleness is now rare (the store maintains a packing-position invariant
   // on every add/delete) but still needs a defensive, dismissible banner —
@@ -124,6 +127,7 @@ export function PackingEditorCanvas() {
     onPointerUp()
     if (pan.endPan() === 'click') {
       if (pinTargetMode) cancelPinTarget()
+      else if (equalSourceId) cancelEqual()
       else selectEdge(null)
     }
   }

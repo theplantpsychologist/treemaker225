@@ -1,14 +1,13 @@
 import { create } from 'zustand'
-import { API_BASE, fetchSolve } from '../api/client'
+import { API_BASE, fetchSnapPaths, fetchSolve } from '../api/client'
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from '../types/constraints'
 import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
 import { DEFAULT_HYPERPARAMS } from '../types/hyperparams'
 import type { PackingState } from '../types/solve'
-import { hasSolvedOnce } from '../types/solve'
 import { toTreeIn } from '../types/tree'
 import type { TreeState } from '../types/tree'
-import { getLeaves } from '../geometry/treeGeometry'
+import { canonicalizeRoot, getLeaves } from '../geometry/treeGeometry'
 import { backfillMissingPositions, computeNaiveInitialization, naiveScale } from '../geometry/naiveInit'
 import {
   collectResolvedPoints,
@@ -27,10 +26,13 @@ import {
 import {
   boundaryEquals,
   mirrorBoundary,
+  pruneInvalidEqualPairs,
   pruneLeafConstraint,
   withClearedBoundary,
+  withClearedEqual,
   withClearedLock,
   withClearedSymmetry,
+  withEqual,
   withLocked,
   withPair,
   withPinCorner,
@@ -51,6 +53,7 @@ interface AppState {
   constraints: ConstraintsState
   selectedEdgeId: string | null
   pairingSourceId: string | null
+  equalSourceId: string | null
   pinTargetMode: 'edge' | 'corner' | null
   constraintError: string | null
   hyperparams: HyperparamsState
@@ -77,13 +80,17 @@ interface AppState {
   deleteNodeById: (id: string) => void
   moveNode: (id: string, x: number, y: number) => void
   setEdgeLength: (id: string, length: number) => void
-  syncPairedLength: (id: string) => void
+  syncEqualLength: (id: string) => void
 
   selectEdge: (id: string | null) => void
   setSymmetryMode: (mode: SymmetryMode) => void
   armPairing: (leafId: string) => void
   cancelPairing: () => void
   pairFlaps: (aId: string, bId: string) => void
+  armEqual: (id: string) => void
+  cancelEqual: () => void
+  setEqualPair: (aId: string, bId: string) => void
+  clearEqualConstraint: (id: string) => void
   armPinTarget: (mode: 'edge' | 'corner') => void
   cancelPinTarget: () => void
   pinToSymmetry: (leafId: string) => void
@@ -102,6 +109,7 @@ interface AppState {
   setClipToSquare: (value: boolean) => void
   clearUiError: () => void
   runSolve: () => Promise<void>
+  snapActivePaths: () => Promise<void>
 
   exportSession: () => void
   importSession: (data: unknown) => void
@@ -113,6 +121,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   constraints: DEFAULT_CONSTRAINTS,
   selectedEdgeId: null,
   pairingSourceId: null,
+  equalSourceId: null,
   pinTargetMode: null,
   constraintError: null,
   hyperparams: DEFAULT_HYPERPARAMS,
@@ -142,6 +151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeParentId: null,
       selectedEdgeId: null,
       pairingSourceId: null,
+      equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
     })
@@ -158,6 +168,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeParentId: null,
       selectedEdgeId: null,
       pairingSourceId: null,
+      equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
     })
@@ -174,6 +185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeParentId: null,
       selectedEdgeId: null,
       pairingSourceId: null,
+      equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
       solveError: null,
@@ -194,7 +206,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  clearSelection: () => set({ selectedEdgeId: null, activeParentId: null, pinTargetMode: null }),
+  clearSelection: () =>
+    set({ selectedEdgeId: null, activeParentId: null, pinTargetMode: null, equalSourceId: null }),
 
   createRootAt: (x, y) => {
     get().pushUndoSnapshot()
@@ -204,11 +217,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addChildAt: (parentId, x, y) => {
     get().pushUndoSnapshot()
-    const { tree } = addChildNode(get().tree, parentId, x, y)
+    const tree = canonicalizeRoot(addChildNode(get().tree, parentId, x, y).tree)
     // The parent just gained a child, so if it was a leaf carrying a
     // constraint, that constraint no longer makes sense — prune it rather
     // than leave a dangling reference the backend would reject at solve time.
-    const { constraints, warning } = pruneLeafConstraint(get().constraints, parentId)
+    const { constraints: prunedConstraints, warning } = pruneLeafConstraint(get().constraints, parentId)
+    const constraints = pruneInvalidEqualPairs(tree, prunedConstraints)
     // Maintain the packing-position invariant once a packing exists (from
     // Initialize or a real solve): every tree id always has a packing
     // position, so `initFrom:'current'` stays viable and no grey-out/stale
@@ -237,6 +251,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       constraints: DEFAULT_CONSTRAINTS,
       lastSolvedScale: null,
       pairingSourceId: null,
+      equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
       uiError: null,
@@ -260,49 +275,58 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     get().pushUndoSnapshot()
-    const { constraints } = pruneLeafConstraint(state.constraints, result.deletedId)
+    const { constraints: prunedConstraints } = pruneLeafConstraint(state.constraints, result.deletedId)
+    const tree = canonicalizeRoot(result.tree)
+    const constraints = pruneInvalidEqualPairs(tree, prunedConstraints)
     // Prune the deleted id from packing.positions in the same set() call as
     // the tree mutation — tree and packing update atomically, so
     // isPackingStale never observes an intermediate mismatched frame, and
     // deleting never opens a warning/grey-out window (see decision #5).
     let packing = state.packing
     if (packing != null) {
-      if (result.tree.rootId == null) {
+      if (tree.rootId == null) {
         packing = null
       } else {
         const { [result.deletedId]: _dropped, ...positions } = packing.positions
         packing = {
           ...packing,
           positions,
-          scale: packing.diagnostics.kind === 'naive' ? naiveScale(result.tree) : packing.scale,
+          scale: packing.diagnostics.kind === 'naive' ? naiveScale(tree) : packing.scale,
         }
       }
     }
     set({
-      tree: result.tree,
+      tree,
       constraints,
       packing,
       activeParentId: null,
       selectedEdgeId: null,
+      equalSourceId: null,
       uiError: null,
     })
   },
 
   moveNode: (id, x, y) => {
     set({ tree: dragNodeTo(get().tree, id, x, y) })
-    get().syncPairedLength(id)
+    get().syncEqualLength(id)
   },
 
   setEdgeLength: (id, length) => {
     set({ tree: setEdgeLengthAction(get().tree, id, length) })
-    get().syncPairedLength(id)
+    get().syncEqualLength(id)
   },
 
-  syncPairedLength: (id) => {
+  /** Whenever a node's length changes (from either canvas), if it has an
+   * equal-size partner (see `types/constraints.ts`'s `equalPairs` — either
+   * two flaps or two rivers), immediately set both to their average, with
+   * an epsilon guard to avoid infinite update loops. Independent of the
+   * old symmetry-`pair` position constraint: `pairFlaps` defaults a new
+   * symmetry pair to also being equal-paired, but the two are otherwise
+   * unrelated (a river-river equal pair has no symmetry constraint at all). */
+  syncEqualLength: (id) => {
     const state = get()
-    const c = state.constraints.perLeaf[id]
-    if (c?.symmetry.kind !== 'pair') return
-    const partner = c.symmetry.pairedWith
+    const partner = state.constraints.equalPairs[id]
+    if (!partner) return
     const a = state.tree.nodes[id]?.length
     const b = state.tree.nodes[partner]?.length
     if (a == null || b == null || Math.abs(a - b) < 1e-9) return
@@ -381,17 +405,50 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       return
     }
-    const nextConstraints = withPair(state.constraints, aId, bId)
+    // Position-pairing defaults to also being equal-sized (per the user's
+    // expectation for mirror-symmetric flaps) — still independently
+    // clearable afterward via clearEqualConstraint, since the two slots are
+    // otherwise unrelated.
+    const nextConstraints = withEqual(withPair(state.constraints, aId, bId), aId, bId)
     if (findAnyCollision(collectResolvedPoints(state.tree, nextConstraints))) {
       set({ constraintError: 'That pairing would place two flaps at the same position.', pairingSourceId: null })
       return
     }
     get().pushUndoSnapshot()
     set({ constraints: nextConstraints, pairingSourceId: null, constraintError: null })
-    get().syncPairedLength(aId)
+    get().syncEqualLength(aId)
     // Whichever partner (if either) carries the boundary pin is the
     // authoritative side for the initial snap — the other mirrors it.
     get().snapFlap(bBoundary.kind !== 'none' ? bId : aId)
+  },
+
+  armEqual: (id) => set({ equalSourceId: id, constraintError: null }),
+  cancelEqual: () => set({ equalSourceId: null }),
+
+  /** Marks two nodes as equal-size — either two flaps or two rivers, never
+   * a mix (rejected with a constraintError, matching how pairFlaps rejects
+   * an incompatible boundary combo). */
+  setEqualPair: (aId, bId) => {
+    if (aId === bId) return
+    const state = get()
+    const a = state.tree.nodes[aId]
+    const b = state.tree.nodes[bId]
+    if (!a || !b) return
+    if ((a.children.length === 0) !== (b.children.length === 0)) {
+      set({
+        constraintError: 'A flap can only be set equal to another flap, and a river only to another river.',
+        equalSourceId: null,
+      })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ constraints: withEqual(state.constraints, aId, bId), equalSourceId: null, constraintError: null })
+    get().syncEqualLength(aId)
+  },
+
+  clearEqualConstraint: (id) => {
+    get().pushUndoSnapshot()
+    set({ constraints: withClearedEqual(get().constraints, id) })
   },
 
   pinToSymmetry: (leafId) => {
@@ -571,13 +628,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               y: p.y,
             })),
             currentScale: packing!.scale,
-            // True only for the very first real solve — a multi-restart
-            // search anchored on the naive/manually-adjusted preview layout
-            // instead of a single deterministic refine. Every later solve
-            // (packing already has a real `solved` diagnostics) keeps the
-            // exact single-shot behavior so it iterates precisely from the
-            // previous solve + the user's own edits.
-            seedMultiRestart: !hasSolvedOnce(packing),
+            // Always run the perturbation-sweep/basin-hopping restart search
+            // anchored on the current layout (naive preview or a prior
+            // solve) rather than a single deterministic refine — restart 0
+            // is always the exact unperturbed seed, so this can never do
+            // worse than the old single-shot behavior, only better (see
+            // solve_service.py's basin-hopping-style restart loop).
+            seedMultiRestart: true,
           }
         : { initFrom: 'random' as const }
       const response = await fetchSolve(treeIn, state.constraints, state.hyperparams, options)
@@ -605,10 +662,53 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  snapActivePaths: async () => {
+    const state = get()
+    const treeIn = toTreeIn(state.tree)
+    const packing = state.packing
+    if (!treeIn || !packing) return
+    if (state.hyperparams.shape === 'circle' || state.hyperparams.shape === 'square') return
+    set({ solving: true, solveError: null })
+    try {
+      const positions = Object.entries(packing.positions).map(([nodeId, p]) => ({ nodeId, x: p.x, y: p.y }))
+      const response = await fetchSnapPaths(treeIn, state.constraints, state.hyperparams, positions, packing.scale)
+      if (response.status !== 'ok') {
+        set({ solveError: response.message ?? 'Snap failed', solving: false })
+        return
+      }
+      if (response.snappedCount === 0) {
+        set({ uiError: 'No active paths to snap.', solving: false })
+        return
+      }
+      get().pushUndoSnapshot()
+      let tree = state.tree
+      for (const { nodeId, length } of response.lengths) {
+        tree = setEdgeLengthAction(tree, nodeId, length)
+      }
+      const nextPositions = { ...packing.positions }
+      for (const { nodeId, x, y } of response.leafPositions) {
+        nextPositions[nodeId] = { x, y }
+      }
+      set({
+        tree,
+        packing: { ...packing, positions: nextPositions },
+        solving: false,
+      })
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError
+      const message = isNetworkError
+        ? `Could not reach the backend at ${API_BASE} — is it running?`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+      set({ solveError: message, solving: false })
+    }
+  },
+
   exportSession: () => {
     const state = get()
     const session: SavedSession = {
-      version: 4,
+      version: 5,
       tree: state.tree,
       constraints: state.constraints,
       hyperparams: state.hyperparams,
@@ -623,16 +723,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!session) {
       throw new Error('Unrecognized session file')
     }
+    // Defensive: a hand-edited (or pre-fix) session file could have a root
+    // that's topologically a leaf — canonicalize before anything downstream
+    // (backfill, rendering) reads rootId.
+    const tree = canonicalizeRoot(session.tree)
     // Defensive: parseSavedSession's migration chain already backfills/prunes
     // positions, but a hand-edited (already-v4) file could still be missing
     // some — re-run it here too so the packing-position invariant holds
     // regardless of where the session file came from.
     const packing = session.packing
-      ? { ...session.packing, positions: backfillMissingPositions(session.tree, session.packing.positions) }
+      ? { ...session.packing, positions: backfillMissingPositions(tree, session.packing.positions) }
       : null
     get().pushUndoSnapshot()
     set({
-      tree: session.tree,
+      tree,
       constraints: session.constraints,
       hyperparams: session.hyperparams,
       packing,

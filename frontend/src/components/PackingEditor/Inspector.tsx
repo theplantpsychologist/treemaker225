@@ -11,7 +11,13 @@ import pinCornerIcon from '../../assets/pin_corner.svg'
 import lockIcon from '../../assets/lock.svg'
 import clearIcon from '../../assets/clear.svg'
 import trashIcon from '../../assets/trash.svg'
+import equalIcon from '../../assets/equal.svg'
 import './Inspector.css'
+
+function equalLabel(equalPairs: Record<string, string>, id: string) {
+  const partner = equalPairs[id]
+  return partner ? `equal with ${partner.slice(0, 6)}` : 'none'
+}
 
 function symmetryLabel(constraint: LeafConstraint) {
   const s = constraint.symmetry
@@ -75,6 +81,10 @@ export function Inspector() {
   const pairingSourceId = useAppStore((s) => s.pairingSourceId)
   const armPairing = useAppStore((s) => s.armPairing)
   const cancelPairing = useAppStore((s) => s.cancelPairing)
+  const equalSourceId = useAppStore((s) => s.equalSourceId)
+  const armEqual = useAppStore((s) => s.armEqual)
+  const cancelEqual = useAppStore((s) => s.cancelEqual)
+  const clearEqualConstraint = useAppStore((s) => s.clearEqualConstraint)
   const pinTargetMode = useAppStore((s) => s.pinTargetMode)
   const armPinTarget = useAppStore((s) => s.armPinTarget)
   const cancelPinTarget = useAppStore((s) => s.cancelPinTarget)
@@ -104,6 +114,15 @@ export function Inspector() {
       <div className="inspector-panel">
         <span>Click another flap to pair with it…</span>
         <button className="inspector-text-button" onClick={cancelPairing}>
+          Cancel
+        </button>
+      </div>
+    )
+  } else if (equalSourceId) {
+    body = (
+      <div className="inspector-panel">
+        <span>Click another flap or river to set equal size…</span>
+        <button className="inspector-text-button" onClick={cancelEqual}>
           Cancel
         </button>
       </div>
@@ -236,6 +255,24 @@ export function Inspector() {
             />
           </div>
         </div>
+
+        <div className="inspector-group">
+          <span className="inspector-group-label">size constraint: {equalLabel(constraints.equalPairs, selectedEdgeId)}</span>
+          <div className="inspector-group-buttons">
+            <IconButton
+              icon={equalIcon}
+              label="Set equal size with another flap"
+              active={constraints.equalPairs[selectedEdgeId] != null}
+              onClick={() => armEqual(selectedEdgeId)}
+            />
+            <IconButton
+              icon={clearIcon}
+              label="Clear equal-size constraint"
+              disabled={constraints.equalPairs[selectedEdgeId] == null}
+              onClick={() => clearEqualConstraint(selectedEdgeId)}
+            />
+          </div>
+        </div>
       </div>
     ) : (
       <div className="inspector-panel">
@@ -244,7 +281,24 @@ export function Inspector() {
           <IconButton icon={clearIcon} label="Deselect" onClick={() => selectEdge(null)} />
         </div>
         {width != null && <span className="inspector-width">width: {width.toFixed(4)}</span>}
-        <span className="inspector-hint">No constraints applicable.</span>
+
+        <div className="inspector-group">
+          <span className="inspector-group-label">size constraint: {equalLabel(constraints.equalPairs, selectedEdgeId)}</span>
+          <div className="inspector-group-buttons">
+            <IconButton
+              icon={equalIcon}
+              label="Set equal size with another river"
+              active={constraints.equalPairs[selectedEdgeId] != null}
+              onClick={() => armEqual(selectedEdgeId)}
+            />
+            <IconButton
+              icon={clearIcon}
+              label="Clear equal-size constraint"
+              disabled={constraints.equalPairs[selectedEdgeId] == null}
+              onClick={() => clearEqualConstraint(selectedEdgeId)}
+            />
+          </div>
+        </div>
       </div>
     )
   }

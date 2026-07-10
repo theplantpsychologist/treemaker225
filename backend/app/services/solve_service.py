@@ -1,6 +1,6 @@
 import random
 import time
-from typing import Set
+from typing import List, Set, Tuple
 
 import networkx as nx
 import numpy as np
@@ -14,14 +14,23 @@ from app.core.constraint_resolution import (
 )
 from app.core.layout import solve_internal_layout
 from app.core.packing import run_circle_restart, run_polygon_restart
-from app.core.shapes import get_bases
+from app.core.shapes import extra_rotation_for, get_bases
 from app.core.tree import build_tree, get_leaves, total_edge_length
 from app.core.variable_plan import VariablePlan
 from app.schemas.constraints import Constraints
+from app.schemas.hyperparams import Hyperparams
 from app.schemas.solve import InitFrom, NodePositionOut, SolveDiagnostics, SolveRequest, SolveResponse
 
 
-def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
+def _validate_constraints(leaf_ids: Set[str], all_node_ids: Set[str], constraints: Constraints) -> None:
+    for a, b in constraints.equal_pairs.items():
+        if a not in all_node_ids or b not in all_node_ids:
+            raise ValueError(f"equal-size constraint references unknown node '{a}' or '{b}'")
+        if constraints.equal_pairs.get(b) != a:
+            raise ValueError(f"'{a}' and '{b}' must be mutually and exclusively equal-paired")
+        if (a in leaf_ids) != (b in leaf_ids):
+            raise ValueError(f"'{a}' and '{b}' can't be equal-paired -- one is a flap and the other a river")
+
     for leaf_id, c in constraints.per_leaf.items():
         if leaf_id not in leaf_ids:
             raise ValueError(f"constraint references unknown leaf '{leaf_id}'")
@@ -67,35 +76,82 @@ def _validate_constraints(leaf_ids: Set[str], constraints: Constraints) -> None:
         raise ValueError(f"'{a.leaf_id}' and '{b.leaf_id}' resolve to the same fixed position")
 
 
-# Max per-restart jitter applied to a seeded multi-restart's position
-# variables (unit-square space) — restart 0 always gets zero noise (the
-# exact seed), ramping linearly up to this by the last restart.
-_SEED_NOISE_MAX = 0.25
-
-
 def _perturb_position_vars(x0: np.ndarray, n_position_vars: int, rng: random.Random, noise: float) -> np.ndarray:
+    """Displaces every position variable by up to +/-noise. Deliberately NOT
+    clamped back into [0, 1] -- scipy's constrained local minimize doesn't
+    require a feasible starting point, and letting a perturbed flap sit
+    outside the square lets the search actually explore past that boundary
+    instead of piling up against it."""
     x = x0.copy()
     for i in range(n_position_vars):
-        x[i] = min(1.0, max(0.0, x[i] + rng.uniform(-noise, noise)))
+        x[i] = x[i] + rng.uniform(-noise, noise)
     return x
 
 
-def _normalize_paired_lengths(tree: nx.DiGraph, constraints: Constraints) -> None:
-    """For every pair, sets both leaves' edge lengths to their average --
-    radius formulas depend on length, and this must happen before the
-    VariablePlan (and its bounds/decode) are built."""
+def _seeded_restarts(
+    plan: VariablePlan,
+    tree: nx.DiGraph,
+    base_x0: np.ndarray,
+    hp: Hyperparams,
+    solver_args: tuple,
+) -> List[Tuple[np.ndarray, float, bool]]:
+    """Restart generation for initFrom=CURRENT (a re-optimize, not the very
+    first solve): restart 0 is always the exact unperturbed seed, so this
+    can never do worse than the old single-shot behavior. Every later
+    restart perturbs the BEST local minimum found so far -- not always the
+    original seed -- by an amount ramping from 0 to hp.max_noise_amplitude
+    across the restart budget, greedily wandering into neighboring basins
+    instead of re-exploring the same neighborhood around the starting point
+    every time. This is the simplest (zero-temperature/greedy) variant of
+    Wales & Doye's basin-hopping algorithm (1997) -- always keep the better
+    of the two candidates, never accept a worse one -- which needs no extra
+    temperature hyperparameter while still escaping shallow local minima
+    that a plain multi-start anchored on one fixed point cannot. A true
+    Metropolis acceptance criterion (occasionally accepting a worse move to
+    escape deeper traps) would need a temperature schedule the user has no
+    way to reason about yet; the greedy variant is the well-established
+    simplification that avoids that without giving up the core benefit.
+    Ranks candidates the same way the caller ranks restarts overall: by
+    (success, scale), so a non-converged perturbation can never displace a
+    converged anchor regardless of its reported scale."""
+    rng = random.Random(hp.seed)
+    n = hp.n_restarts
+    results = [run_circle_restart(plan, tree, base_x0, *solver_args)]
+    anchor_x, anchor_scale, anchor_success = results[0]
+    for i in range(1, n):
+        noise = hp.max_noise_amplitude * i / (n - 1)
+        candidate_x0 = _perturb_position_vars(anchor_x, plan.n_position_vars, rng, noise)
+        result = run_circle_restart(plan, tree, candidate_x0, *solver_args)
+        results.append(result)
+        _, candidate_scale, candidate_success = result
+        if (candidate_success, candidate_scale) > (anchor_success, anchor_scale):
+            anchor_x, anchor_scale, anchor_success = result
+    return results
+
+
+def _normalize_equal_lengths(tree: nx.DiGraph, leaf_ids: List[str], constraints: Constraints) -> None:
+    """For every equal-size pair where both sides are leaves, sets both
+    edges to their average -- radius formulas depend on length, and this
+    must happen before the VariablePlan (and its bounds/decode) are built.
+    River-river equal pairs need no backend handling: their lengths are pure
+    display inputs the solver never reads for its own math, and the
+    frontend already keeps them in sync before any request is sent. This
+    replaces the old symmetry-`pair`-only averaging -- equal-size is now an
+    independent constraint (see types/constraints.ts's `equalPairs`) that a
+    symmetry pair merely defaults to, so only leaves actually carrying the
+    equal constraint get force-averaged here."""
     seen: Set[str] = set()
-    for leaf_id, c in constraints.per_leaf.items():
-        if c.symmetry.kind != "pair" or leaf_id in seen:
+    leaf_id_set = set(leaf_ids)
+    for a, b in constraints.equal_pairs.items():
+        if a in seen or a not in leaf_id_set or b not in leaf_id_set:
             continue
-        partner = c.symmetry.paired_with
-        seen.add(leaf_id)
-        seen.add(partner)
-        parent_a = next(tree.predecessors(leaf_id))
-        parent_b = next(tree.predecessors(partner))
-        avg = (tree.edges[parent_a, leaf_id]["length"] + tree.edges[parent_b, partner]["length"]) / 2
-        tree.edges[parent_a, leaf_id]["length"] = avg
-        tree.edges[parent_b, partner]["length"] = avg
+        seen.add(a)
+        seen.add(b)
+        parent_a = next(tree.predecessors(a))
+        parent_b = next(tree.predecessors(b))
+        avg = (tree.edges[parent_a, a]["length"] + tree.edges[parent_b, b]["length"]) / 2
+        tree.edges[parent_a, a]["length"] = avg
+        tree.edges[parent_b, b]["length"] = avg
 
 
 def solve(req: SolveRequest) -> SolveResponse:
@@ -104,8 +160,8 @@ def solve(req: SolveRequest) -> SolveResponse:
     leaf_ids = get_leaves(tree)
     hp = req.hyperparams
 
-    _validate_constraints(set(leaf_ids), req.constraints)
-    _normalize_paired_lengths(tree, req.constraints)
+    _validate_constraints(set(leaf_ids), set(tree.nodes), req.constraints)
+    _normalize_equal_lengths(tree, leaf_ids, req.constraints)
     plan = VariablePlan(leaf_ids, req.constraints)
 
     solver_args = (hp.solver_method, hp.tol, hp.max_iter)
@@ -116,17 +172,7 @@ def solve(req: SolveRequest) -> SolveResponse:
         current_positions = {p.node_id: (p.x, p.y) for p in req.current_positions}
         base_x0 = plan.encode_from_positions(current_positions, req.current_scale)
         if req.seed_multi_restart and hp.n_restarts > 1:
-            rng = random.Random(hp.seed)
-            n = hp.n_restarts
-            circle_results = [
-                run_circle_restart(
-                    plan,
-                    tree,
-                    _perturb_position_vars(base_x0, plan.n_position_vars, rng, _SEED_NOISE_MAX * i / (n - 1)),
-                    *solver_args,
-                )
-                for i in range(n)
-            ]
+            circle_results = _seeded_restarts(plan, tree, base_x0, hp, solver_args)
         else:
             circle_results = [run_circle_restart(plan, tree, base_x0, *solver_args)]
     else:
@@ -144,7 +190,9 @@ def solve(req: SolveRequest) -> SolveResponse:
     circle_results.sort(key=lambda r: (r[2], r[1]), reverse=True)
     best_circle_scale = circle_results[0][1]
 
-    extra_rotation = hp.hexagon_extra_rotation if hp.shape == "hexagon" else hp.square_extra_rotation
+    extra_rotation = extra_rotation_for(
+        hp.shape, hp.hexagon_extra_rotation, hp.square_extra_rotation, hp.dodecagon_extra_rotation
+    )
     bases = get_bases(hp.shape, req.constraints.symmetry_mode, extra_rotation)
     best_scale_refined = None
     if bases is not None:

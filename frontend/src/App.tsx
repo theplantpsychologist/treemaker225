@@ -61,7 +61,8 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>Treemaker Pro</h1>
+        <title>Treemaker Plus</title>
+        <h1>Treemaker Plus</h1>
         <ShapeSelector />
         <UndoRedoControls />
         <ThemeToggle />

@@ -55,7 +55,7 @@ def test_pin_symmetry_diagonal_keeps_leaf_on_diagonal():
     assert abs(pos["x"] - pos["y"]) < 1e-6
 
 
-def test_pair_mirrors_positions_and_averages_lengths():
+def test_pair_mirrors_positions():
     payload = _tree_payload(
         {
             "leaf_a": {"symmetry": _sym("pair", pairedWith="leaf_b")},
@@ -71,6 +71,65 @@ def test_pair_mirrors_positions_and_averages_lengths():
     bx, by = positions["leaf_b"]
     assert abs((1 - ax) - bx) < 1e-6
     assert abs(ay - by) < 1e-6
+
+
+def test_equal_pair_averages_leaf_lengths():
+    # leaf_a=3, leaf_b=5 in _tree_payload -- an explicit equal-size pair
+    # (independent of the position pair above) should force both toward
+    # their average (4) before the solve even starts, visible via the
+    # resulting flap radii.
+    payload = _tree_payload(
+        {
+            "leaf_a": {"symmetry": _sym("pair", pairedWith="leaf_b")},
+            "leaf_b": {"symmetry": _sym("pair", pairedWith="leaf_a")},
+        },
+        symmetry_mode="book",
+    )
+    payload["constraints"]["equalPairs"] = {"leaf_a": "leaf_b", "leaf_b": "leaf_a"}
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    scale = body["scale"]
+    positions = {p["nodeId"]: (p["x"], p["y"]) for p in body["leafPositions"]}
+    ax, _ay = positions["leaf_a"]
+    bx, _by = positions["leaf_b"]
+    # Both ends are now equidistant from the symmetry line at x=0.5.
+    assert abs((0.5 - ax) - (bx - 0.5)) < 1e-6
+    assert scale > 0
+
+
+def test_equal_pair_without_symmetry_still_averages_lengths():
+    # Equal-size is independent of position pairing -- two otherwise
+    # unconstrained leaves can be equal-sized without any symmetry pair.
+    payload = _tree_payload(symmetry_mode="none")
+    payload["constraints"]["equalPairs"] = {"leaf_a": "leaf_b", "leaf_b": "leaf_a"}
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 200
+
+
+def test_equal_pair_mismatched_kinds_is_rejected():
+    payload = _tree_payload(
+        {"leaf_a": {}},
+        symmetry_mode="none",
+    )
+    # root is an internal node, leaf_a is a flap -- mixing kinds is rejected.
+    payload["constraints"]["equalPairs"] = {"leaf_a": "root", "root": "leaf_a"}
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 422
+
+
+def test_equal_pair_not_mutual_is_rejected():
+    payload = _tree_payload(symmetry_mode="none")
+    payload["constraints"]["equalPairs"] = {"leaf_a": "leaf_b"}
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 422
+
+
+def test_equal_pair_unknown_node_is_rejected():
+    payload = _tree_payload(symmetry_mode="none")
+    payload["constraints"]["equalPairs"] = {"leaf_a": "not_a_real_node"}
+    resp = client.post("/api/solve", json=payload)
+    assert resp.status_code == 422
 
 
 def test_pin_edge_fixes_perpendicular_coordinate():

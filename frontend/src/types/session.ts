@@ -5,7 +5,7 @@ import type { TreeState } from './tree'
 import { backfillMissingPositions } from '../geometry/naiveInit'
 
 export interface SavedSession {
-  version: 4
+  version: 5
   tree: TreeState
   constraints: ConstraintsState
   hyperparams: HyperparamsState
@@ -15,12 +15,40 @@ export interface SavedSession {
   clipToSquare?: boolean
 }
 
+/** The constraints shape used by session files exported before the
+ * equal-size constraint existed — kept only for migration. */
+interface ConstraintsStateV4 {
+  symmetryMode: SymmetryMode
+  perLeaf: Record<string, LeafConstraint>
+}
+
+/** The pre-equal-constraint session shape — kept only for migration. */
+interface SavedSessionV4 {
+  version: 4
+  tree: TreeState
+  constraints: ConstraintsStateV4
+  hyperparams: HyperparamsState
+  packing: PackingState | null
+  clipToSquare?: boolean
+}
+
+function migrateSessionV4toV5(v4: SavedSessionV4): SavedSession {
+  return {
+    version: 5,
+    tree: v4.tree,
+    constraints: { ...v4.constraints, equalPairs: {} },
+    hyperparams: v4.hyperparams,
+    packing: v4.packing,
+    clipToSquare: v4.clipToSquare,
+  }
+}
+
 /** The pre-sentinel packing shape used by session files exported before the
  * naive/solved diagnostics split existed — kept only for migration. */
 interface SavedSessionV3 {
   version: 3
   tree: TreeState
-  constraints: ConstraintsState
+  constraints: ConstraintsStateV4
   hyperparams: HyperparamsState
   packing: LegacyPacking
   clipToSquare?: boolean
@@ -113,8 +141,8 @@ function migrateSessionV2toV3(v2: SavedSessionV2): SavedSessionV3 {
  * (see `types/solve.ts`'s `PackingDiagnostics`), and defensively backfills/
  * prunes `packing.positions` against the current tree so a hand-edited or
  * pre-invariant export can't reopen into a stale/mismatched state. */
-function migrateSessionV3toV4(v3: SavedSessionV3): SavedSession {
-  let packing: SavedSession['packing'] = null
+function migrateSessionV3toV4(v3: SavedSessionV3): SavedSessionV4 {
+  let packing: SavedSessionV4['packing'] = null
   if (v3.packing) {
     const treeIds = new Set(Object.keys(v3.tree.nodes))
     const pruned: Record<string, { x: number; y: number }> = {}
@@ -147,9 +175,11 @@ export function parseSavedSession(data: unknown): SavedSession | null {
   if (!data || typeof data !== 'object') return null
   const d = data as Record<string, unknown>
   if (!looksLikeSession(d)) return null
-  if (d.version === 1) return migrateSessionV3toV4(migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1)))
-  if (d.version === 2) return migrateSessionV3toV4(migrateSessionV2toV3(d as unknown as SavedSessionV2))
-  if (d.version === 3) return migrateSessionV3toV4(d as unknown as SavedSessionV3)
-  if (d.version === 4) return d as unknown as SavedSession
+  if (d.version === 1)
+    return migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1))))
+  if (d.version === 2) return migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(d as unknown as SavedSessionV2)))
+  if (d.version === 3) return migrateSessionV4toV5(migrateSessionV3toV4(d as unknown as SavedSessionV3))
+  if (d.version === 4) return migrateSessionV4toV5(d as unknown as SavedSessionV4)
+  if (d.version === 5) return d as unknown as SavedSession
   return null
 }

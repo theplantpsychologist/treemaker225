@@ -64,3 +64,8 @@ class LeafConstraint(CamelModel):
 class Constraints(CamelModel):
     symmetry_mode: SymmetryMode = SymmetryMode.NONE
     per_leaf: Dict[str, LeafConstraint] = {}
+    # Symmetric map (equal_pairs[a] == b implies equal_pairs[b] == a) of node
+    # ids whose lengths must be kept equal -- either two flaps (leaf ids) or
+    # two rivers (internal node ids), never a mix. Independent of per_leaf's
+    # position-only constraints.
+    equal_pairs: Dict[str, str] = {}

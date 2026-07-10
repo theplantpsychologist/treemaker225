@@ -37,10 +37,17 @@ export interface HyperparamsState {
    * multiple and still render as a solid ("fully active") line rather than a
    * dashed semi-active parallelogram. */
   activeSnapAngleTolerance: number
+  /** Only meaningful for a re-optimize (not the very first solve): the
+   * largest per-restart random displacement applied to position variables,
+   * ramping linearly from 0 (restart 0, the exact current layout) up to
+   * this by the last restart — see backend `solve_service.py`'s basin-
+   * hopping-style restart loop. Perturbation is deliberately allowed to
+   * push a flap outside [0,1]. */
+  maxNoiseAmplitude: number
 }
 
 export const DEFAULT_HYPERPARAMS: HyperparamsState = {
-  nRestarts: 1,
+  nRestarts: 20,
   nRefine: 1,
   alpha: 100,
   shape: 'circle',
@@ -53,4 +60,5 @@ export const DEFAULT_HYPERPARAMS: HyperparamsState = {
   maxIter: null,
   activeSnapLengthTolerance: 0.1,
   activeSnapAngleTolerance: 10,
+  maxNoiseAmplitude: 0.2,
 }

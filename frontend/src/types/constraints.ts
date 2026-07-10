@@ -37,9 +37,18 @@ export const NO_LEAF_CONSTRAINT: LeafConstraint = {
 export interface ConstraintsState {
   symmetryMode: SymmetryMode
   perLeaf: Record<string, LeafConstraint>
+  /** Symmetric map (equalPairs[a]===b implies equalPairs[b]===a) of node ids
+   * whose lengths must be kept equal — applies to either two flaps (leaf
+   * ids) or two rivers (internal node ids), never a mix. Independent of
+   * `perLeaf`'s position-only constraints: a leaf can be equal-paired
+   * without being symmetry-paired, and vice versa, though `pairFlaps`
+   * defaults a new symmetry pair to also being equal-sized (see
+   * `state/store.ts`). */
+  equalPairs: Record<string, string>
 }
 
 export const DEFAULT_CONSTRAINTS: ConstraintsState = {
   symmetryMode: 'none',
   perLeaf: {},
+  equalPairs: {},
 }

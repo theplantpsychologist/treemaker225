@@ -51,3 +51,23 @@ def test_square_ignores_symmetry_mode():
     assert get_bases("square", symmetry_mode="diagonal", extra_rotation=True) == get_bases(
         "square", extra_rotation=True
     )
+
+
+def test_dodecagon_base_orientation_is_axis_aligned():
+    bases = get_bases("dodecagon")
+    assert math.isclose(_angle_offset(bases), 0.0, abs_tol=1e-9)
+
+
+def test_dodecagon_extra_rotation_adds_15_degrees():
+    bases = get_bases("dodecagon", extra_rotation=True)
+    assert math.isclose(_angle_offset(bases), math.pi / 12, abs_tol=1e-9)
+
+
+def test_dodecagon_ignores_symmetry_mode():
+    # Same mechanism as square: dodecagon's 15-degree rotation is purely the
+    # manual extra_rotation toggle -- any "default to rotated when diagonal"
+    # logic lives at the frontend store's call site, not in get_bases itself.
+    assert get_bases("dodecagon", symmetry_mode="diagonal") == get_bases("dodecagon")
+    assert get_bases("dodecagon", symmetry_mode="diagonal", extra_rotation=True) == get_bases(
+        "dodecagon", extra_rotation=True
+    )

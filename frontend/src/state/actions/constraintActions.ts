@@ -8,6 +8,7 @@ import type {
 } from '../../types/constraints'
 import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
 import { mirrorCorner, mirrorEdge } from '../../geometry/symmetry'
+import type { TreeState } from '../../types/tree'
 
 function getConstraint(perLeaf: Record<string, LeafConstraint>, leafId: string): LeafConstraint {
   return perLeaf[leafId] ?? NO_LEAF_CONSTRAINT
@@ -63,7 +64,7 @@ export function withSymmetryMode(state: ConstraintsState, mode: SymmetryMode): C
       }
     }
   }
-  return { symmetryMode: mode, perLeaf }
+  return { ...state, symmetryMode: mode, perLeaf }
 }
 
 export function withPinSymmetry(state: ConstraintsState, leafId: string): ConstraintsState {
@@ -169,4 +170,50 @@ export function withClearedLock(state: ConstraintsState, leafId: string): Constr
   const perLeaf = { ...state.perLeaf }
   setConstraint(perLeaf, leafId, { ...getConstraint(perLeaf, leafId), locked: { kind: 'none' } })
   return { ...state, perLeaf }
+}
+
+function unlinkEqualPartner(equalPairs: Record<string, string>, id: string): void {
+  const partner = equalPairs[id]
+  if (partner == null) return
+  delete equalPairs[id]
+  if (equalPairs[partner] === id) delete equalPairs[partner]
+}
+
+/** Marks two nodes (both flaps, or both rivers — never mixed; callers
+ * validate that before calling) as equal-size, severing any prior
+ * equal-partner on either side first (monogamous, like a symmetry pair). */
+export function withEqual(state: ConstraintsState, aId: string, bId: string): ConstraintsState {
+  const equalPairs = { ...state.equalPairs }
+  unlinkEqualPartner(equalPairs, aId)
+  unlinkEqualPartner(equalPairs, bId)
+  equalPairs[aId] = bId
+  equalPairs[bId] = aId
+  return { ...state, equalPairs }
+}
+
+export function withClearedEqual(state: ConstraintsState, id: string): ConstraintsState {
+  const equalPairs = { ...state.equalPairs }
+  unlinkEqualPartner(equalPairs, id)
+  return { ...state, equalPairs }
+}
+
+/** Drops any equalPairs entry whose two sides no longer both exist, or are
+ * no longer the same kind (both leaves or both internal/river nodes) — a
+ * node transitioning kind (a leaf gaining a child, a branch losing its
+ * last child, either side being deleted) invalidates an equal-size pairing
+ * the same way it would invalidate a position pairing. Called after every
+ * topology-changing store action. */
+export function pruneInvalidEqualPairs(tree: TreeState, state: ConstraintsState): ConstraintsState {
+  const equalPairs = { ...state.equalPairs }
+  let changed = false
+  for (const [id, partnerId] of Object.entries(equalPairs)) {
+    const node = tree.nodes[id]
+    const partner = tree.nodes[partnerId]
+    const sameKind = node != null && partner != null && (node.children.length === 0) === (partner.children.length === 0)
+    if (!sameKind) {
+      delete equalPairs[id]
+      changed = true
+    }
+  }
+  return changed ? { ...state, equalPairs } : state
 }

@@ -84,6 +84,19 @@ export function SettingsModal() {
                   onChange={(e) => setHyperparams({ nRestarts: Number(e.target.value) })}
                 />
               </label>
+              <label
+                className="settings-field"
+                title="Re-optimize only: largest random perturbation applied to each restart's starting layout, ramping from 0 up to this across the restart budget — helps escape the same local minimum on repeated Optimize clicks"
+              >
+                max noise amplitude
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={hyperparams.maxNoiseAmplitude}
+                  onChange={(e) => setHyperparams({ maxNoiseAmplitude: Number(e.target.value) })}
+                />
+              </label>
               <label className="settings-field" title="How many top circle-packing candidates get refined into the chosen shape">
                 refine
                 <input

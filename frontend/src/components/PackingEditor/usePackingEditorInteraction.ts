@@ -68,8 +68,10 @@ export function usePackingEditorInteraction(
   const moveFlap = useAppStore((s) => s.moveFlap)
   const setEdgeLength = useAppStore((s) => s.setEdgeLength)
   const pairingSourceId = useAppStore((s) => s.pairingSourceId)
+  const equalSourceId = useAppStore((s) => s.equalSourceId)
   const selectEdge = useAppStore((s) => s.selectEdge)
   const pairFlaps = useAppStore((s) => s.pairFlaps)
+  const setEqualPair = useAppStore((s) => s.setEqualPair)
   const pushUndoSnapshot = useAppStore((s) => s.pushUndoSnapshot)
 
   const dragState = useRef<DragState | null>(null)
@@ -142,25 +144,33 @@ export function usePackingEditorInteraction(
 
   /** A river has no move/resize gesture at all — pointerdown always just
    * selects it (for tree-editor highlighting and the Inspector's width
-   * display). Width changes only happen via the tree editor's edge length,
-   * to avoid the ungated "any click-drag on an already-selected river
-   * resizes it" bug this used to have. */
+   * display), UNLESS an equal-size pairing is armed, in which case this
+   * completes it (rivers have no position-pairing flow, only the equal-size
+   * one). Width changes only happen via the tree editor's edge length, to
+   * avoid the ungated "any click-drag on an already-selected river resizes
+   * it" bug this used to have. */
   const selectRiver = useCallback(
     (nodeId: string) => {
-      selectEdge(nodeId)
+      if (equalSourceId && equalSourceId !== nodeId) {
+        setEqualPair(equalSourceId, nodeId)
+      } else {
+        selectEdge(nodeId)
+      }
     },
-    [selectEdge],
+    [equalSourceId, setEqualPair, selectEdge],
   )
 
   const onFlapClicked = useCallback(
     (nodeId: string) => {
-      if (pairingSourceId && pairingSourceId !== nodeId) {
+      if (equalSourceId && equalSourceId !== nodeId) {
+        setEqualPair(equalSourceId, nodeId)
+      } else if (pairingSourceId && pairingSourceId !== nodeId) {
         pairFlaps(pairingSourceId, nodeId)
       } else {
         selectEdge(nodeId)
       }
     },
-    [pairingSourceId, pairFlaps, selectEdge],
+    [equalSourceId, setEqualPair, pairingSourceId, pairFlaps, selectEdge],
   )
 
   const onPointerMove = useCallback(

@@ -4,12 +4,16 @@ import { ScaleSlider } from './ScaleSlider'
 import { SettingsModal } from './SettingsModal'
 import './PackingToolbar.css'
 
+const SNAPPABLE_SHAPES = new Set(['hexagon', 'octagon', 'dodecagon'])
+
 export function PackingToolbar() {
   const tree = useAppStore((s) => s.tree)
   const packing = useAppStore((s) => s.packing)
+  const shape = useAppStore((s) => s.hyperparams.shape)
   const solving = useAppStore((s) => s.solving)
   const runSolve = useAppStore((s) => s.runSolve)
   const initializePacking = useAppStore((s) => s.initializePacking)
+  const snapActivePaths = useAppStore((s) => s.snapActivePaths)
 
   if (!packing) {
     return (
@@ -31,6 +35,15 @@ export function PackingToolbar() {
       <button className="solve-button" onClick={() => void runSolve()} disabled={solving || !tree.rootId}>
         {solving ? 'Optimizing…' : 'Optimize'}
       </button>
+      {SNAPPABLE_SHAPES.has(shape) && (
+        <button
+          className="reinitialize-button"
+          onClick={() => void snapActivePaths()}
+          disabled={solving || !tree.rootId}
+        >
+          Snap paths
+        </button>
+      )}
       <SettingsModal />
     </div>
   )

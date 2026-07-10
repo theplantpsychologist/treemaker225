@@ -18,7 +18,6 @@ OCT_BASES: ShapeBases = regular_ngon_bases(8)
 
 SHAPE_BASES: Dict[str, ShapeBases] = {
     "octagon": OCT_BASES,
-    "dodecagon": regular_ngon_bases(12),
 }
 
 
@@ -30,6 +29,15 @@ def _square_bases(extra_rotation: bool) -> ShapeBases:
     at the frontend store's call site, not here."""
     offset = math.pi / 4 if extra_rotation else 0.0
     return regular_ngon_bases(4, offset)
+
+
+def _dodecagon_bases(extra_rotation: bool) -> ShapeBases:
+    """Dodecagon's angle offset mirrors the square pattern -- a manual
+    extra_rotation toggle rotating it 15 degrees; any "default to rotated
+    when diagonal symmetry is active" behavior lives at the frontend store's
+    call site, not here."""
+    offset = math.pi / 12 if extra_rotation else 0.0
+    return regular_ngon_bases(12, offset)
 
 
 def _hexagon_bases(symmetry_mode: str, extra_rotation: bool) -> ShapeBases:
@@ -60,4 +68,22 @@ def get_bases(shape: str, symmetry_mode: str = "none", extra_rotation: bool = Fa
         return _hexagon_bases(symmetry_mode, extra_rotation)
     if shape == "square":
         return _square_bases(extra_rotation)
+    if shape == "dodecagon":
+        return _dodecagon_bases(extra_rotation)
     return SHAPE_BASES[shape]
+
+
+def extra_rotation_for(
+    shape: str, hexagon_extra_rotation: bool, square_extra_rotation: bool, dodecagon_extra_rotation: bool
+) -> bool:
+    """Picks whichever shape's own rotation-toggle hyperparam applies to
+    `shape` (only hexagon/square/dodecagon have one) -- the one dispatch
+    every call site needs, instead of duplicating this if/elif chain (see
+    frontend/src/geometry/shapes.ts's `extraRotationFor` mirror)."""
+    if shape == "hexagon":
+        return hexagon_extra_rotation
+    if shape == "square":
+        return square_extra_rotation
+    if shape == "dodecagon":
+        return dodecagon_extra_rotation
+    return False
