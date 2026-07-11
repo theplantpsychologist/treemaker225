@@ -44,6 +44,51 @@ export interface HyperparamsState {
    * hopping-style restart loop. Perturbation is deliberately allowed to
    * push a flap outside [0,1]. */
   maxNoiseAmplitude: number
+  /** Path-network snap solver (see backend app/core/path_network*.py) --
+   * weight on the primary objective: maximize the number of selected
+   * direct paths plus the number of active (degree>=3) intermediate
+   * points, each counted once. Deliberately large relative to C1/C2/C3 so
+   * this signal dominates -- there's no hard per-flap degree floor, so this
+   * is what drives the solver to select anything at all. */
+  pathNetworkCountWeight: number
+  /** Weight on the flap-displacement penalty: C1 * (initial normalized leaf
+   * length)^2 * |displacement|^2. */
+  pathNetworkC1: number
+  /** Weight on the length-change term: reward when a length grows relative
+   * to the whole tree, penalty when it shrinks. */
+  pathNetworkC2: number
+  /** Weight on the small per-active-intermediate-point penalty, biasing the
+   * solve toward fewer/simpler indirect bends. */
+  pathNetworkC3: number
+  /** How many outer continuation/annealing steps to run before giving up on
+   * reaching a fully discrete (0/1) boolean relaxation. */
+  pathNetworkAnnealOuterIters: number
+  /** Initial weight of the boolean-relaxation entropy penalty; grows by
+   * pathNetworkAnnealWeightGrowth every outer iteration. */
+  pathNetworkAnnealWeightStart: number
+  pathNetworkAnnealWeightGrowth: number
+  /** Every relaxed boolean must land within this of 0 or 1 for the
+   * continuation loop to stop early. */
+  pathNetworkBoolEps: number
+  /** Basin-hopping restarts wrapping the whole anneal+round+polish
+   * pipeline, mirroring maxNoiseAmplitude's role for the main Optimize
+   * button. */
+  pathNetworkNRestarts: number
+  pathNetworkMaxNoiseAmplitude: number
+  /** Upper bound on any length variable, as a multiple of its initial
+   * value -- without this, a length whose every pair got pruned from the
+   * non-overlap check had nothing at all stopping it from growing without
+   * limit under a nonzero pathNetworkC2. */
+  pathNetworkGrowthCap: number
+  /** Big-M slacks for the angle/length gated constraints at the start of
+   * the anneal schedule -- angle starts tighter than length since an
+   * off-angle crease is a worse defect than a slightly-off length. */
+  pathNetworkMAngleStart: number
+  pathNetworkMLengthStart: number
+  /** Both M's shrink by this factor every outer anneal iteration, down to
+   * pathNetworkMFloor. */
+  pathNetworkMDecay: number
+  pathNetworkMFloor: number
 }
 
 export const DEFAULT_HYPERPARAMS: HyperparamsState = {
@@ -61,4 +106,19 @@ export const DEFAULT_HYPERPARAMS: HyperparamsState = {
   activeSnapLengthTolerance: 0.1,
   activeSnapAngleTolerance: 10,
   maxNoiseAmplitude: 0.2,
+  pathNetworkCountWeight: 1.0,
+  pathNetworkC1: 0.0,
+  pathNetworkC2: 0.0,
+  pathNetworkC3: 0.00,
+  pathNetworkAnnealOuterIters: 6,
+  pathNetworkAnnealWeightStart: 1.0,
+  pathNetworkAnnealWeightGrowth: 3.0,
+  pathNetworkBoolEps: 0.3,
+  pathNetworkNRestarts: 1,
+  pathNetworkMaxNoiseAmplitude: 0.0,
+  pathNetworkGrowthCap: 3.0,
+  pathNetworkMAngleStart: 2.0,
+  pathNetworkMLengthStart: 4.0,
+  pathNetworkMDecay: 0.5,
+  pathNetworkMFloor: 0.05,
 }

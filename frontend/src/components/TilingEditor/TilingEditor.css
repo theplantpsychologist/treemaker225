@@ -1,0 +1,69 @@
+.tiling-editor-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--panel-bg);
+  overflow: hidden;
+  container-type: size;
+}
+
+.tiling-editor-canvas {
+  width: min(100cqw, 100cqh);
+  height: min(100cqw, 100cqh);
+  overflow: visible;
+}
+
+.tiling-editor-backdrop {
+  fill: transparent;
+}
+
+.tiling-square {
+  fill: var(--panel-bg);
+  stroke: #d1d5db;
+  stroke-width: var(--sw-regular);
+  vector-effect: non-scaling-stroke;
+}
+
+.tiling-flap {
+  fill: var(--flap-color);
+  fill-opacity: 0.15;
+  stroke: var(--flap-color);
+  stroke-width: var(--sw-thin);
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.tiling-river {
+  fill: var(--river-color);
+  fill-opacity: 0.15;
+  stroke: var(--river-color);
+  stroke-width: var(--sw-hairline);
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* A path selected by the path-network solve -- rendered bold, on top of the
+   (deliberately faint) flap/river outlines, since this canvas exists purely
+   to show the chosen crease network. */
+.tiling-selected-path {
+  stroke: var(--active-path-color);
+  stroke-width: var(--sw-active-path);
+  vector-effect: non-scaling-stroke;
+  fill: none;
+  pointer-events: none;
+}
+
+.tiling-empty-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #6b7280;
+  font-size: 0.85rem;
+  text-align: center;
+  pointer-events: none;
+}

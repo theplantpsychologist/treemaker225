@@ -14,6 +14,7 @@ export function PackingToolbar() {
   const runSolve = useAppStore((s) => s.runSolve)
   const initializePacking = useAppStore((s) => s.initializePacking)
   const snapActivePaths = useAppStore((s) => s.snapActivePaths)
+  const snapPathNetwork = useAppStore((s) => s.snapPathNetwork)
 
   if (!packing) {
     return (
@@ -42,6 +43,15 @@ export function PackingToolbar() {
           disabled={solving || !tree.rootId}
         >
           Snap paths
+        </button>
+      )}
+      {SNAPPABLE_SHAPES.has(shape) && (
+        <button
+          className="reinitialize-button"
+          onClick={() => void snapPathNetwork()}
+          disabled={solving || !tree.rootId}
+        >
+          Snap path network
         </button>
       )}
       <SettingsModal />

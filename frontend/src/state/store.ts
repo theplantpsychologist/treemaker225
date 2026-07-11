@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { API_BASE, fetchSnapPaths, fetchSolve } from '../api/client'
+import { API_BASE, fetchPathNetworkSnap, fetchSnapPaths, fetchSolve } from '../api/client'
+import type { PathNetworkResponse } from '../types/pathNetwork'
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from '../types/constraints'
 import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
@@ -65,6 +66,11 @@ interface AppState {
   uiError: string | null
   undoStack: HistorySnapshot[]
   redoStack: HistorySnapshot[]
+  /** The most recent path-network solve's selected direct paths/legs, for
+   * the tiling canvas's view-only rendering. Transient (not part of undo/
+   * redo snapshots, like solveError/uiError) -- it's a display artifact of
+   * the last snap, not tree/packing state. */
+  pathNetworkResult: PathNetworkResponse | null
 
   pushUndoSnapshot: () => void
   undo: () => void
@@ -110,6 +116,7 @@ interface AppState {
   clearUiError: () => void
   runSolve: () => Promise<void>
   snapActivePaths: () => Promise<void>
+  snapPathNetwork: () => Promise<void>
 
   exportSession: () => void
   importSession: (data: unknown) => void
@@ -133,6 +140,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiError: null,
   undoStack: [],
   redoStack: [],
+  pathNetworkResult: null,
 
   pushUndoSnapshot: () => {
     const state = get()
@@ -693,6 +701,51 @@ export const useAppStore = create<AppState>((set, get) => ({
         tree,
         packing: { ...packing, positions: nextPositions },
         solving: false,
+      })
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError
+      const message = isNetworkError
+        ? `Could not reach the backend at ${API_BASE} — is it running?`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+      set({ solveError: message, solving: false })
+    }
+  },
+
+  snapPathNetwork: async () => {
+    const state = get()
+    const treeIn = toTreeIn(state.tree)
+    const packing = state.packing
+    if (!treeIn || !packing) return
+    if (state.hyperparams.shape === 'circle' || state.hyperparams.shape === 'square') return
+    set({ solving: true, solveError: null })
+    try {
+      const positions = Object.entries(packing.positions).map(([nodeId, p]) => ({ nodeId, x: p.x, y: p.y }))
+      const response = await fetchPathNetworkSnap(treeIn, state.constraints, state.hyperparams, positions, packing.scale)
+      if (response.status !== 'ok') {
+        set({ solveError: response.message ?? 'Path network snap failed', solving: false })
+        return
+      }
+      if (response.leafPositions.length === 0) {
+        set({ uiError: response.message ?? 'No candidate paths found.', solving: false, pathNetworkResult: response })
+        return
+      }
+      get().pushUndoSnapshot()
+      let tree = state.tree
+      for (const { nodeId, length } of response.lengths) {
+        tree = setEdgeLengthAction(tree, nodeId, length)
+      }
+      const nextPositions = { ...packing.positions }
+      for (const { nodeId, x, y } of response.leafPositions) {
+        nextPositions[nodeId] = { x, y }
+      }
+      set({
+        tree,
+        packing: { ...packing, positions: nextPositions },
+        pathNetworkResult: response,
+        solving: false,
+        uiError: response.message ?? null,
       })
     } catch (err) {
       const isNetworkError = err instanceof TypeError
