@@ -14,11 +14,43 @@
   color: var(--text);
   border-radius: 8px;
   padding: 1.25rem 1.5rem;
-  min-width: 260px;
+  /* A multi-column child's intrinsic (shrink-to-fit) width collapses to a
+     single column's width, so the modal needs an explicit target width to
+     actually spread sections across columns -- min() still lets it shrink
+     to fewer columns (down to 1) on a narrow viewport. */
+  width: min(820px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  overflow-x: auto;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.settings-modal-title {
+  margin: 0;
+}
+
+/* Multiple columns, already grouped by section -- each section is one
+   break-inside:avoid unit so a section's fields never split across
+   columns, and columns balance in height automatically. Falls back to a
+   single column when the modal isn't wide enough for a second one. */
+.settings-columns {
+  column-width: 250px;
+  column-gap: 1.75rem;
+}
+
+.settings-section {
+  break-inside: avoid;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.settings-section h2 {
+  break-after: avoid;
 }
 
 .settings-modal h3 {

@@ -46,14 +46,81 @@
   pointer-events: none;
 }
 
-/* A path selected by the path-network solve -- rendered bold, on top of the
-   (deliberately faint) flap/river outlines, since this canvas exists purely
-   to show the chosen crease network. */
-.tiling-selected-path {
+/* A user-built crease -- direct or one leg of an indirect path, rendered
+   identically either way (the distinction only matters to the underlying
+   graph, not the drawing). Wider invisible-ish hit area via stroke-width so
+   clicking to select-for-deletion doesn't require pixel-perfect precision. */
+.tiling-leg {
   stroke: var(--active-path-color);
   stroke-width: var(--sw-active-path);
   vector-effect: non-scaling-stroke;
   fill: none;
+  cursor: pointer;
+}
+
+.tiling-leg.selected {
+  stroke: var(--accent);
+  stroke-width: calc(var(--sw-active-path) * 2);
+}
+
+/* A graph vertex -- a flap tip (larger) or an intermediate crease junction
+   (smaller), both draggable/clickable. Radius is in the canvas's own
+   VIEW_SIZE-scaled units, not zoom-compensated (matching this canvas's
+   original vertex-dot convention). */
+.tiling-vertex-dot {
+  fill: var(--active-path-color);
+  cursor: pointer;
+}
+
+.tiling-vertex-dot.intermediate {
+  fill: var(--river-color);
+}
+
+.tiling-vertex-dot.armed {
+  fill: var(--accent);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+/* Per the manual editor's DOF display: a short red tick through a vertex
+   whose x (horizontal tick) or y (vertical tick) coordinate is still free --
+   some null-space basis vector has a non-negligible component there. Both
+   ticks together read as a "+" (fully free); neither renders at all for a
+   fully-constrained vertex. */
+.tiling-free-axis-mark {
+  stroke: #dc2626;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* The 2 candidate bend configurations shown after picking a 2nd vertex in
+   "Bent path" mode, before the user commits to one -- dashed ghost legs
+   meeting at the candidate junction, clickable to choose. */
+.tiling-bend-preview {
+  cursor: pointer;
+}
+
+.tiling-bend-preview line {
+  stroke: var(--accent);
+  stroke-width: var(--sw-regular);
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+  fill: none;
+}
+
+.tiling-bend-preview circle {
+  fill: var(--accent);
+  fill-opacity: 0.4;
+}
+
+.tiling-dof-readout {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #6b7280;
+  font-size: 0.8rem;
   pointer-events: none;
 }
 

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, path_network, snap, solve
+from app.api import health, path_network, snap, solve, tiling
 
 app = FastAPI(title="treemaker225")
 
@@ -20,3 +20,4 @@ app.include_router(health.router, prefix="/api")
 app.include_router(solve.router, prefix="/api")
 app.include_router(snap.router, prefix="/api")
 app.include_router(path_network.router, prefix="/api")
+app.include_router(tiling.router, prefix="/api")

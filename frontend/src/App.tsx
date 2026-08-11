@@ -4,6 +4,7 @@ import './App.css'
 import { TreeEditorCanvas } from './components/TreeEditor/TreeEditorCanvas'
 import { PackingEditorCanvas } from './components/PackingEditor/PackingEditorCanvas'
 import { TilingEditorCanvas } from './components/TilingEditor/TilingEditorCanvas'
+import { TilingToolbar } from './components/TilingEditor/TilingToolbar'
 import { PackingToolbar } from './components/Toolbar/PackingToolbar'
 import { ShapeSelector } from './components/Toolbar/ShapeSelector'
 import { UndoRedoControls } from './components/UndoRedo/UndoRedoControls'
@@ -140,6 +141,7 @@ function App() {
           <div className="pane-header">
             <h2>Tiling Editor</h2>
           </div>
+          <TilingToolbar />
           <div className="pane-body">
             <TilingEditorCanvas />
           </div>

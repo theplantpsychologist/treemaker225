@@ -1,0 +1,19 @@
+.tiling-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.tiling-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tiling-toolbar-hint {
+  color: var(--text-muted, #6b7280);
+  font-size: 0.75rem;
+}

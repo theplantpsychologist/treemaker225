@@ -1,0 +1,26 @@
+/* Reuses `.inspector-rail`/`.inspector-panel`/`.inspector-group`* from
+   `PackingEditor/Inspector.css` (imported alongside this file) for the same
+   visual language as the packing Inspector -- these rules only add the
+   compact edge/corner pin-button grid that panel doesn't need. */
+
+.tiling-pin-grid {
+  flex-wrap: wrap;
+}
+
+.tiling-pin-button {
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 0.7rem;
+  font-family: var(--mono, monospace);
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #374151;
+  cursor: pointer;
+}
+
+.tiling-pin-button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}

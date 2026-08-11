@@ -2,6 +2,7 @@ import type { TreeState } from '../types/tree'
 import type { ConstraintsState } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
 import type { PackingState } from '../types/solve'
+import type { TilingGraphState } from '../types/tilingGraph'
 
 export interface HistorySnapshot {
   tree: TreeState
@@ -9,6 +10,12 @@ export interface HistorySnapshot {
   hyperparams: HyperparamsState
   packing: PackingState | null
   lastSolvedScale: number | null
+  /** Unlike the old automated solvers' one-shot `tilingResult`/
+   * `pathNetworkResult` (display artifacts, never part of this snapshot),
+   * the manual tiling graph *is* real hand-edited state -- seeding it,
+   * adding/deleting a leg, and dragging a vertex are all real edits the
+   * user expects to undo/redo, same as a tree or constraint edit. */
+  tilingGraph: TilingGraphState | null
 }
 
 /** Captures the document-ish slices of state worth undoing. Every action that
@@ -22,6 +29,7 @@ export function snapshot(state: HistorySnapshot): HistorySnapshot {
     hyperparams: state.hyperparams,
     packing: state.packing,
     lastSolvedScale: state.lastSolvedScale,
+    tilingGraph: state.tilingGraph,
   }
 }
 

@@ -4,6 +4,7 @@ import type { HyperparamsState } from '../types/hyperparams'
 import type { InitFrom, NodePositionOut, SolveResponse } from '../types/solve'
 import type { SnapPathsResponse } from '../types/snap'
 import type { PathNetworkResponse } from '../types/pathNetwork'
+import type { TilingResponse } from '../types/tiling'
 
 export const API_BASE = 'http://localhost:8000'
 
@@ -77,4 +78,23 @@ export async function fetchPathNetworkSnap(
     throw new Error(body?.detail ?? `Path network snap failed (${res.status})`)
   }
   return res.json() as Promise<PathNetworkResponse>
+}
+
+export async function fetchTilingSnap(
+  tree: TreeIn,
+  constraints: ConstraintsState,
+  hyperparams: HyperparamsState,
+  positions: NodePositionOut[],
+  scale: number,
+): Promise<TilingResponse> {
+  const res = await fetch(`${API_BASE}/api/tiling-snap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tree, constraints, hyperparams, positions, scale }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail ?? `Tiling solve failed (${res.status})`)
+  }
+  return res.json() as Promise<TilingResponse>
 }

@@ -1,6 +1,8 @@
 import { create } from 'zustand'
-import { API_BASE, fetchPathNetworkSnap, fetchSnapPaths, fetchSolve } from '../api/client'
+import { API_BASE, fetchPathNetworkSnap, fetchSnapPaths, fetchSolve, fetchTilingSnap } from '../api/client'
 import type { PathNetworkResponse } from '../types/pathNetwork'
+import type { TilingResponse } from '../types/tiling'
+import type { TilingGraphState, TilingPathCandidates } from '../types/tilingGraph'
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from '../types/constraints'
 import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
@@ -9,6 +11,20 @@ import type { PackingState } from '../types/solve'
 import { toTreeIn } from '../types/tree'
 import type { TreeState } from '../types/tree'
 import { canonicalizeRoot, getLeaves } from '../geometry/treeGeometry'
+import {
+  clearTilingVertexBoundary as clearTilingVertexBoundaryAction,
+  clearTilingVertexSymmetry as clearTilingVertexSymmetryAction,
+  commitPathOption,
+  deleteTilingLeg as deleteTilingLegAction,
+  deleteTilingVertexAndLegs,
+  pinTilingVertexToCorner as pinTilingVertexToCornerAction,
+  pinTilingVertexToEdge as pinTilingVertexToEdgeAction,
+  pinTilingVertexToSymmetry as pinTilingVertexToSymmetryAction,
+  previewPathCandidates,
+  projectVertexDrag,
+  seedTilingGraph as seedTilingGraphAction,
+  toggleTilingVertexLock as toggleTilingVertexLockAction,
+} from './actions/tilingGraphActions'
 import { backfillMissingPositions, computeNaiveInitialization, naiveScale } from '../geometry/naiveInit'
 import {
   collectResolvedPoints,
@@ -71,6 +87,28 @@ interface AppState {
    * redo snapshots, like solveError/uiError) -- it's a display artifact of
    * the last snap, not tree/packing state. */
   pathNetworkResult: PathNetworkResponse | null
+  /** The most recent tiling solve's selected direct paths/vertices, for the
+   * tiling canvas's view-only rendering. Same transient treatment as
+   * pathNetworkResult -- a display artifact, not undo/redo state. */
+  tilingResult: TilingResponse | null
+
+  /** The manual tiling editor's own planar graph -- independent of
+   * `packing` once seeded (see `seedTilingGraph`); real edited state,
+   * tracked by undo/redo (unlike `tilingResult` above). */
+  tilingGraph: TilingGraphState | null
+  /** 0, 1, or 2 vertex ids -- a plain click always replaces this with a
+   * single id; shift-click adds a 2nd (or swaps out the older of 2
+   * already selected). Reaching 2 triggers `tilingPathCandidates`. */
+  tilingSelectedVertexIds: string[]
+  /** The up to 3 candidate paths offered once 2 vertices are selected,
+   * awaiting the user's choice before anything is committed. */
+  tilingPathCandidates: TilingPathCandidates | null
+  tilingSelectedLegId: string | null
+  tilingError: string | null
+  /** True while `seedTilingGraph`'s one best-effort network call is in
+   * flight -- separate from the packing-solve `solving` flag so seeding
+   * doesn't grey out unrelated packing controls. */
+  tilingSeeding: boolean
 
   pushUndoSnapshot: () => void
   undo: () => void
@@ -117,6 +155,24 @@ interface AppState {
   runSolve: () => Promise<void>
   snapActivePaths: () => Promise<void>
   snapPathNetwork: () => Promise<void>
+  solveTiling: () => Promise<void>
+
+  seedTilingGraph: () => Promise<void>
+  selectTilingVertex: (vertexId: string, additive: boolean) => void
+  chooseTilingPathOption: (index: number) => void
+  clearTilingSelection: () => void
+  selectTilingLeg: (legId: string | null) => void
+  deleteSelectedTilingLeg: () => void
+  deleteSelectedTilingVertex: () => void
+  pinTilingVertexToSymmetry: (flapId: string) => void
+  pinTilingVertexToEdge: (flapId: string, edge: EdgeSide) => void
+  pinTilingVertexToCorner: (flapId: string, corner: CornerId) => void
+  clearTilingVertexSymmetry: (flapId: string) => void
+  clearTilingVertexBoundary: (flapId: string) => void
+  toggleTilingVertexLock: (flapId: string) => void
+  clearTilingError: () => void
+  dragTilingVertexStart: () => void
+  dragTilingVertexTo: (vertexId: string, x: number, y: number) => void
 
   exportSession: () => void
   importSession: (data: unknown) => void
@@ -141,6 +197,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   undoStack: [],
   redoStack: [],
   pathNetworkResult: null,
+  tilingResult: null,
+  tilingGraph: null,
+  tilingSelectedVertexIds: [],
+  tilingPathCandidates: null,
+  tilingSelectedLegId: null,
+  tilingError: null,
+  tilingSeeding: false,
 
   pushUndoSnapshot: () => {
     const state = get()
@@ -162,6 +225,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
+      // These are one-shot solve outputs cached only against whatever
+      // packing was current when they were computed, never part of
+      // HistorySnapshot itself (see the field comment) -- left in place,
+      // they'd keep rendering stale selected paths/vertices against the
+      // now-reverted packing (the "undo doesn't fully undo" bug). There's
+      // no correct value to restore them to, so clear rather than carry
+      // over.
+      pathNetworkResult: null,
+      tilingResult: null,
+      // tilingGraph itself IS part of the snapshot (via the `...prev`
+      // spread above) and gets restored to its historical value -- only
+      // the transient in-progress editing state (selection/candidates)
+      // needs clearing, same reasoning as pairingSourceId/pinTargetMode.
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingError: null,
     })
   },
 
@@ -179,6 +259,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
+      pathNetworkResult: null,
+      tilingResult: null,
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingError: null,
     })
   },
 
@@ -197,6 +283,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       pinTargetMode: null,
       constraintError: null,
       solveError: null,
+      pathNetworkResult: null,
+      tilingResult: null,
+      tilingGraph: null,
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingError: null,
       undoStack,
       redoStack: [],
     })
@@ -756,6 +849,216 @@ export const useAppStore = create<AppState>((set, get) => ({
           : String(err)
       set({ solveError: message, solving: false })
     }
+  },
+
+  solveTiling: async () => {
+    const state = get()
+    const treeIn = toTreeIn(state.tree)
+    const packing = state.packing
+    if (!treeIn || !packing) return
+    if (state.hyperparams.shape === 'circle' || state.hyperparams.shape === 'square') return
+    set({ solving: true, solveError: null })
+    try {
+      const positions = Object.entries(packing.positions).map(([nodeId, p]) => ({ nodeId, x: p.x, y: p.y }))
+      const response = await fetchTilingSnap(treeIn, state.constraints, state.hyperparams, positions, packing.scale)
+      if (response.status !== 'ok') {
+        set({ solveError: response.message ?? 'Tiling solve failed', solving: false })
+        return
+      }
+      if (response.leafPositions.length === 0) {
+        set({ uiError: response.message ?? 'No candidate paths found.', solving: false, tilingResult: response })
+        return
+      }
+      get().pushUndoSnapshot()
+      // Tree edge lengths (and hence flap radii/river widths) are never
+      // touched by this solve -- only positions move.
+      const nextPositions = { ...packing.positions }
+      for (const { nodeId, x, y } of response.leafPositions) {
+        nextPositions[nodeId] = { x, y }
+      }
+      for (const { nodeId, x, y } of response.internalPositions) {
+        nextPositions[nodeId] = { x, y }
+      }
+      set({
+        packing: { ...packing, positions: nextPositions },
+        tilingResult: response,
+        solving: false,
+      })
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError
+      const message = isNetworkError
+        ? `Could not reach the backend at ${API_BASE} — is it running?`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+      set({ solveError: message, solving: false })
+    }
+  },
+
+  seedTilingGraph: async () => {
+    const state = get()
+    const packing = state.packing
+    if (!packing || !state.tree.rootId) return
+    if (state.hyperparams.shape === 'circle' || state.hyperparams.shape === 'square') return
+    set({ tilingSeeding: true, tilingError: null })
+    const tilingGraph = await seedTilingGraphAction(state.tree, state.constraints, state.hyperparams, packing.positions, packing.scale)
+    get().pushUndoSnapshot()
+    set({
+      tilingGraph,
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingError: null,
+      tilingSeeding: false,
+    })
+  },
+
+  /** Click dispatcher for a tiling vertex -- a plain click always replaces
+   * the whole selection; shift-click (`additive`) adds a 2nd vertex (or
+   * swaps out the older of 2 already selected). Reaching exactly 2
+   * triggers `previewPathCandidates`. */
+  selectTilingVertex: (vertexId, additive) => {
+    const state = get()
+    const { tilingGraph, tilingSelectedVertexIds } = state
+    if (!tilingGraph) return
+    if (!additive || tilingSelectedVertexIds.length === 0) {
+      set({ tilingSelectedVertexIds: [vertexId], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: null })
+      return
+    }
+    if (tilingSelectedVertexIds.includes(vertexId)) return
+    const nextIds =
+      tilingSelectedVertexIds.length >= 2 ? [tilingSelectedVertexIds[1], vertexId] : [...tilingSelectedVertexIds, vertexId]
+    if (nextIds.length !== 2) {
+      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null })
+      return
+    }
+    const preview = previewPathCandidates(tilingGraph, state.hyperparams, nextIds[0], nextIds[1])
+    if ('error' in preview) {
+      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: preview.error })
+      return
+    }
+    set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: preview.candidates, tilingSelectedLegId: null, tilingError: null })
+  },
+
+  chooseTilingPathOption: (index) => {
+    const state = get()
+    const { tilingGraph, tilingPathCandidates } = state
+    if (!tilingGraph || !tilingPathCandidates) return
+    const option = tilingPathCandidates.options[index]
+    if (!option) return
+    const result = commitPathOption(
+      tilingGraph,
+      state.tree,
+      state.hyperparams,
+      tilingPathCandidates.vertexAId,
+      tilingPathCandidates.vertexBId,
+      option,
+    )
+    if ('error' in result) {
+      set({ tilingError: result.error, tilingPathCandidates: null, tilingSelectedVertexIds: [] })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingPathCandidates: null, tilingSelectedVertexIds: [], tilingError: null })
+  },
+
+  clearTilingSelection: () => set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null }),
+
+  selectTilingLeg: (legId) => set({ tilingSelectedLegId: legId, tilingSelectedVertexIds: [], tilingPathCandidates: null }),
+
+  deleteSelectedTilingLeg: () => {
+    const state = get()
+    const { tilingGraph, tilingSelectedLegId } = state
+    if (!tilingGraph || !tilingSelectedLegId) return
+    get().pushUndoSnapshot()
+    const tilingGraphNext = deleteTilingLegAction(tilingGraph, state.tree, tilingSelectedLegId)
+    set({ tilingGraph: tilingGraphNext, tilingSelectedLegId: null })
+  },
+
+  deleteSelectedTilingVertex: () => {
+    const state = get()
+    const { tilingGraph, tilingSelectedVertexIds } = state
+    if (!tilingGraph || tilingSelectedVertexIds.length !== 1) return
+    get().pushUndoSnapshot()
+    const tilingGraphNext = deleteTilingVertexAndLegs(tilingGraph, state.tree, tilingSelectedVertexIds[0])
+    set({ tilingGraph: tilingGraphNext, tilingSelectedVertexIds: [] })
+  },
+
+  pinTilingVertexToSymmetry: (flapId) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const result = pinTilingVertexToSymmetryAction(state.tilingGraph, state.tree, flapId)
+    if ('error' in result) {
+      set({ tilingError: result.error })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingError: null })
+  },
+
+  pinTilingVertexToEdge: (flapId, edge) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const result = pinTilingVertexToEdgeAction(state.tilingGraph, state.tree, flapId, edge)
+    if ('error' in result) {
+      set({ tilingError: result.error })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingError: null })
+  },
+
+  pinTilingVertexToCorner: (flapId, corner) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const result = pinTilingVertexToCornerAction(state.tilingGraph, state.tree, flapId, corner)
+    if ('error' in result) {
+      set({ tilingError: result.error })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingError: null })
+  },
+
+  clearTilingVertexSymmetry: (flapId) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    get().pushUndoSnapshot()
+    set({ tilingGraph: clearTilingVertexSymmetryAction(state.tilingGraph, state.tree, flapId) })
+  },
+
+  clearTilingVertexBoundary: (flapId) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    get().pushUndoSnapshot()
+    set({ tilingGraph: clearTilingVertexBoundaryAction(state.tilingGraph, state.tree, flapId) })
+  },
+
+  toggleTilingVertexLock: (flapId) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    get().pushUndoSnapshot()
+    set({ tilingGraph: toggleTilingVertexLockAction(state.tilingGraph, state.tree, flapId) })
+  },
+
+  clearTilingError: () => set({ tilingError: null }),
+
+  /** Pushes one undo snapshot at the start of a vertex-drag gesture (not
+   * per-frame) -- mirrors `usePackingEditorInteraction`'s flap-drag, which
+   * pushes once on the first actual-drag frame rather than on every
+   * pointermove. */
+  dragTilingVertexStart: () => get().pushUndoSnapshot(),
+
+  dragTilingVertexTo: (vertexId, x, y) => {
+    const tilingGraph = get().tilingGraph
+    if (!tilingGraph) return
+    const positions = projectVertexDrag(tilingGraph, vertexId, { x, y })
+    const vertices = { ...tilingGraph.vertices }
+    for (const [id, p] of Object.entries(positions)) {
+      const v = vertices[id]
+      if (v) vertices[id] = { ...v, x: p.x, y: p.y }
+    }
+    set({ tilingGraph: { ...tilingGraph, vertices } })
   },
 
   exportSession: () => {

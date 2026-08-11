@@ -14,6 +14,7 @@
     "graphology": "^0.26.0",
     "graphology-shortest-path": "^2.1.0",
     "graphology-types": "^0.24.8",
+    "ml-matrix": "^6.15.0",
     "nanoid": "^5.1.16",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

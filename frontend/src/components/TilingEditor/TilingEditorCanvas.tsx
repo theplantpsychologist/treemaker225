@@ -1,10 +1,13 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
 import { buildShapePoints, extraRotationFor } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import { VIEW_SIZE } from '../PackingEditor/usePackingEditorInteraction'
+import { useTilingEditorInteraction } from './useTilingEditorInteraction'
+import { TilingInspector } from './TilingInspector'
+import type { TilingGraphState } from '../../types/tilingGraph'
 import './TilingEditor.css'
 
 /** The unit square is y-up internally (see geometry/edgePin.ts); flip y so
@@ -28,12 +31,31 @@ interface RiverInfo {
   pathD: string
 }
 
-/** View-only: pans/zooms like the other two canvases but has no click/drag
- * interactions of its own. Renders the same flap/river geometry as the
- * packing canvas, but only draws the paths that were actually selected by
- * the last path-network snap solve -- direct paths as a straight line
- * between the two flaps, half-legs as a straight line from a flap to its
- * intermediate point. */
+/** Flap positions from the tiling graph, layered over `packing.positions` --
+ * `computeRiverBands` recurses top-down from the tree root and bails out
+ * entirely (returning zero bands) if *any* node along the way, including
+ * root and every internal/river node, has no entry in `positions` at all
+ * (see `geometry/rivers.ts`'s `computeNode`) -- even though an internal
+ * node's own (x, y) value is never actually read for anything, only its
+ * presence is checked. The tiling graph itself has no notion of internal
+ * tree nodes at all (only flap and intermediate-crease vertices), so a
+ * flap-only position map used alone silently produced zero rivers. Falling
+ * back to the (unchanging, pre-seed) packing position for every node this
+ * graph doesn't cover keeps every entry present while still reflecting each
+ * flap's *current* (possibly since-dragged) tiling position. */
+function riverPositionsFromGraph(
+  graph: TilingGraphState,
+  packingPositions: Record<string, { x: number; y: number }>,
+): Record<string, { x: number; y: number }> {
+  const out: Record<string, { x: number; y: number }> = { ...packingPositions }
+  for (const v of Object.values(graph.vertices)) {
+    if (v.kind === 'flap' && v.flapId) out[v.flapId] = { x: v.x, y: v.y }
+  }
+  return out
+}
+
+const FREE_AXIS_TICK = 8
+
 export function TilingEditorCanvas() {
   const svgRef = useRef<SVGSVGElement>(null)
   const tree = useAppStore((s) => s.tree)
@@ -44,8 +66,32 @@ export function TilingEditorCanvas() {
   const dodecagonExtraRotation = useAppStore((s) => s.hyperparams.dodecagonExtraRotation)
   const extraRotation = extraRotationFor(shape, hexagonExtraRotation, squareExtraRotation, dodecagonExtraRotation)
   const constraints = useAppStore((s) => s.constraints)
-  const pathNetworkResult = useAppStore((s) => s.pathNetworkResult)
+  const tilingGraph = useAppStore((s) => s.tilingGraph)
+  const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
+  const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
+  const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
+  const clearTilingSelection = useAppStore((s) => s.clearTilingSelection)
+  const deleteSelectedTilingLeg = useAppStore((s) => s.deleteSelectedTilingLeg)
+  const deleteSelectedTilingVertex = useAppStore((s) => s.deleteSelectedTilingVertex)
+  const chooseTilingPathOption = useAppStore((s) => s.chooseTilingPathOption)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
+  const { beginVertexPointerDown, onLegPointerDown, onPointerMove, onPointerUp } = useTilingEditorInteraction(svgRef)
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping = target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+      if (isTyping) return
+      if (e.key === 'Escape') {
+        clearTilingSelection()
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (tilingSelectedLegId) deleteSelectedTilingLeg()
+        else if (tilingSelectedVertexIds.length === 1) deleteSelectedTilingVertex()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [clearTilingSelection, tilingSelectedLegId, deleteSelectedTilingLeg, tilingSelectedVertexIds, deleteSelectedTilingVertex])
 
   const onBackgroundPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
     try {
@@ -55,24 +101,39 @@ export function TilingEditorCanvas() {
     }
     pan.beginPan(e)
   }
-  const onSvgPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => pan.onPanMove(e)
-  const onSvgPointerUp = () => pan.endPan()
+  const onSvgPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    onPointerMove(e)
+    pan.onPanMove(e)
+  }
+  const onSvgPointerUp = () => {
+    onPointerUp()
+    if (pan.endPan() === 'click') {
+      clearTilingSelection()
+    }
+  }
 
   const { flaps, rivers } = useMemo(() => {
     const flapList: FlapInfo[] = []
     const riverList: RiverInfo[] = []
     if (!packing) return { flaps: flapList, rivers: riverList }
+    const positions = tilingGraph ? riverPositionsFromGraph(tilingGraph, packing.positions) : packing.positions
 
-    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
+    const bands = computeRiverBands(tree, positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
     const pathByNodeId = new Map(bands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
 
     for (const node of Object.values(tree.nodes)) {
       if (!node.parentId || node.length == null) continue
-      const childPos = packing.positions[node.id]
-      if (!childPos) continue
 
-      const width = packing.scale * node.length
       if (node.children.length === 0) {
+        // Only flap (leaf) nodes need their own position here -- `positions`
+        // is flap-only once a tilingGraph exists (it has no entry for
+        // internal/river nodes at all, unlike `packing.positions`, which
+        // covers every tree node). River bands never need an internal
+        // node's own position anyway (see `computeRiverBands`'s doc): its
+        // band shape is derived purely from its children's footprints.
+        const childPos = positions[node.id]
+        if (!childPos) continue
+        const width = packing.scale * node.length
         const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width, constraints.symmetryMode, extraRotation)
         flapList.push({ key: node.id, points: toPointsAttr(shapePoints, VIEW_SIZE) })
       } else {
@@ -82,7 +143,7 @@ export function TilingEditorCanvas() {
       }
     }
     return { flaps: flapList, rivers: riverList }
-  }, [tree, packing, constraints, shape, extraRotation])
+  }, [tree, packing, tilingGraph, constraints, shape, extraRotation])
 
   return (
     <div className="tiling-editor-wrapper">
@@ -111,25 +172,80 @@ export function TilingEditorCanvas() {
           <polygon key={`tiling-flap-${f.key}`} className="tiling-flap" points={f.points} />
         ))}
 
-        {packing &&
-          pathNetworkResult?.selectedDirectPaths.map((p) => {
-            const pa = packing.positions[p.a]
-            const pb = packing.positions[p.b]
+        {tilingGraph &&
+          Object.values(tilingGraph.legs).map((leg) => {
+            const pa = tilingGraph.vertices[leg.vertexA]
+            const pb = tilingGraph.vertices[leg.vertexB]
             if (!pa || !pb) return null
             const [x1, y1] = toScreen(pa.x, pa.y)
             const [x2, y2] = toScreen(pb.x, pb.y)
-            return <line key={`tiling-direct-${p.a}-${p.b}`} className="tiling-selected-path" x1={x1} y1={y1} x2={x2} y2={y2} />
+            const selected = leg.id === tilingSelectedLegId
+            return (
+              <line
+                key={`tiling-leg-${leg.id}`}
+                className={`tiling-leg${selected ? ' selected' : ''}`}
+                x1={x1}
+                y1={y1}
+                x2={x2}
+                y2={y2}
+                onPointerDown={(e) => onLegPointerDown(leg.id, e)}
+              />
+            )
           })}
-        {packing &&
-          pathNetworkResult?.selectedLegs.map((leg, i) => {
-            const pf = packing.positions[leg.flap]
-            if (!pf) return null
-            const [x1, y1] = toScreen(pf.x, pf.y)
-            const [x2, y2] = toScreen(leg.x, leg.y)
-            return <line key={`tiling-leg-${leg.flap}-${i}`} className="tiling-selected-path" x1={x1} y1={y1} x2={x2} y2={y2} />
+
+        {tilingPathCandidates &&
+          tilingGraph &&
+          tilingPathCandidates.options.map((option, i) => {
+            const pa = tilingGraph.vertices[tilingPathCandidates.vertexAId]
+            const pb = tilingGraph.vertices[tilingPathCandidates.vertexBId]
+            if (!pa || !pb) return null
+            const [ax, ay] = toScreen(pa.x, pa.y)
+            const [bx, by] = toScreen(pb.x, pb.y)
+            if (option.kind === 'direct') {
+              return (
+                // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+                <g key={`tiling-path-option-${i}`} className="tiling-bend-preview" onClick={() => chooseTilingPathOption(i)}>
+                  <line x1={ax} y1={ay} x2={bx} y2={by} />
+                </g>
+              )
+            }
+            const [px, py] = toScreen(option.config.bendPoint.x, option.config.bendPoint.y)
+            return (
+              // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+              <g key={`tiling-path-option-${i}`} className="tiling-bend-preview" onClick={() => chooseTilingPathOption(i)}>
+                <line x1={ax} y1={ay} x2={px} y2={py} />
+                <line x1={bx} y1={by} x2={px} y2={py} />
+                <circle cx={px} cy={py} r={5} />
+              </g>
+            )
+          })}
+
+        {tilingGraph &&
+          Object.values(tilingGraph.vertices).map((v) => {
+            const [x, y] = toScreen(v.x, v.y)
+            const selected = tilingSelectedVertexIds.includes(v.id)
+            const free = tilingGraph.freeAxes[v.id]
+            return (
+              <g key={`tiling-vertex-${v.id}`}>
+                <circle
+                  className={`tiling-vertex-dot ${v.kind}${selected ? ' armed' : ''}`}
+                  cx={x}
+                  cy={y}
+                  r={v.kind === 'flap' ? 5 : 3}
+                  onPointerDown={(e) => beginVertexPointerDown(v.id, e)}
+                />
+                {free?.x && <line className="tiling-free-axis-mark" x1={x - FREE_AXIS_TICK} y1={y} x2={x + FREE_AXIS_TICK} y2={y} />}
+                {free?.y && <line className="tiling-free-axis-mark" x1={x} y1={y - FREE_AXIS_TICK} x2={x} y2={y + FREE_AXIS_TICK} />}
+              </g>
+            )
           })}
       </svg>
-      {!pathNetworkResult && <div className="tiling-empty-hint">Run "Snap path network" to populate this view</div>}
+      {tilingGraph ? (
+        <div className="tiling-dof-readout">Degrees of freedom: {tilingGraph.dof}</div>
+      ) : (
+        <div className="tiling-empty-hint">Click "Seed tiling" to populate this view</div>
+      )}
+      <TilingInspector />
     </div>
   )
 }

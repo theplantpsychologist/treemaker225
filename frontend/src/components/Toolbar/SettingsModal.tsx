@@ -21,7 +21,10 @@ export function SettingsModal() {
         createPortal(
           <div className="settings-modal-backdrop" onClick={() => setOpen(false)}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-              <h2>Settings</h2>
+              <h2 className="settings-modal-title">Settings</h2>
+              <div className="settings-columns">
+              <section className="settings-section">
+              <h2>Display</h2>
               <label
                 className="settings-field settings-checkbox"
                 title="Hide any part of a flap/river that spills past the paper square"
@@ -72,7 +75,8 @@ export function SettingsModal() {
                   rotate dodecagon 15°
                 </label>
               )}
-              <hr />
+              </section>
+              <section className="settings-section">
               <h2>Packing solver</h2>
               <label className="settings-field" title="Number of random-restart circle-packing solves">
                 restarts
@@ -151,7 +155,8 @@ export function SettingsModal() {
                   <option value="trust-constr">trust-constr</option>
                 </select>
               </label>
-
+              </section>
+              <section className="settings-section">
               <h2>Axial topology</h2>
               <label
                 className="settings-field"
@@ -182,6 +187,8 @@ export function SettingsModal() {
                   />
                 </label>
               )}
+              </section>
+              <section className="settings-section">
               <h2>Path network solver</h2>
               <label className="settings-field" title="Weight on the flap-displacement penalty -- larger values keep flaps closer to where they started">
                 displacement weight (C1)
@@ -322,6 +329,8 @@ export function SettingsModal() {
                   onChange={(e) => setHyperparams({ pathNetworkMFloor: Number(e.target.value) })}
                 />
               </label>
+              </section>
+              </div>
               <button className="settings-done" onClick={() => setOpen(false)}>
                 Done
               </button>
