@@ -46,6 +46,30 @@
   pointer-events: none;
 }
 
+/* A straight-skeleton ridge -- red by default, blue where its boundary
+   endpoint is a concave (reflex) vertex of the face. */
+.tiling-ridge {
+  stroke: #dc2626;
+  stroke-width: var(--sw-thin);
+  vector-effect: non-scaling-stroke;
+  fill: none;
+  pointer-events: none;
+}
+
+.tiling-ridge.concave {
+  stroke: #2563eb;
+}
+
+/* A perpendicular from a straight-skeleton node to one of its tangent
+   sides -- faded/neutral, purely diagnostic. */
+.tiling-hinge {
+  stroke: #9ca3af;
+  stroke-opacity: 0.6;
+  stroke-width: var(--sw-hairline);
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
 /* A user-built crease -- direct or one leg of an indirect path, rendered
    identically either way (the distinction only matters to the underlying
    graph, not the drawing). Wider invisible-ish hit area via stroke-width so
@@ -101,7 +125,7 @@
   cursor: pointer;
 }
 
-.tiling-bend-preview line {
+.tiling-bend-preview line:not(.tiling-bend-preview-hit) {
   stroke: var(--accent);
   stroke-width: var(--sw-regular);
   stroke-dasharray: 6 4;
@@ -112,6 +136,16 @@
 .tiling-bend-preview circle {
   fill: var(--accent);
   fill-opacity: 0.4;
+}
+
+/* Invisible wider stroke layered over each candidate segment, purely to
+   enlarge the clickable area well past the thin dashed line's own paint --
+   a transparent stroke still counts as "painted" for hit-testing. */
+.tiling-bend-preview line.tiling-bend-preview-hit {
+  stroke: transparent;
+  stroke-width: 20px;
+  vector-effect: non-scaling-stroke;
+  fill: none;
 }
 
 .tiling-dof-readout {

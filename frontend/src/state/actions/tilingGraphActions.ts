@@ -7,6 +7,7 @@ import type { TreeState } from '../../types/tree'
 import { toTreeIn } from '../../types/tree'
 import type { FrozenHullPin, TilingGraphState, TilingLeg, TilingPathCandidates, TilingVertex } from '../../types/tilingGraph'
 import type { PathOption } from '../../geometry/tilingGraphOps'
+import type { Point } from '../../geometry/symmetry'
 import { getLeaves } from '../../geometry/treeGeometry'
 import { extraRotationFor } from '../../geometry/shapes'
 import { buildBaseRows } from '../../geometry/tilingBaseRows'
@@ -330,6 +331,100 @@ function pickBorderAnchors(hullFlapIds: string[], vertices: Record<string, Tilin
   return anchors
 }
 
+/** Collapses any `intermediate` vertex left with exactly 2 legs whose
+ * directions, read outward from that vertex, are opposite each other
+ * (i.e. the "bend" is actually straight) into a single direct leg between
+ * its two flap neighbors -- the vertex and both legs are removed. Compares
+ * committed bin indices, not raw angles, since both legs' `angle` values
+ * are already snapped -- exact float equality isn't needed or assumed.
+ * Runs in a loop since collapsing one bend can't create another (a flap
+ * vertex is never a merge candidate, only `intermediate` ones are), but a
+ * single pass could still miss a later vertex in iteration order after an
+ * earlier collapse changes `Object.values(legs)`; looping until a pass
+ * finds nothing keeps this simple rather than reasoning about iteration
+ * order. Mutates `vertices`/`legs` in place, matching this file's existing
+ * seed-time construction style. */
+export function mergeCollinearIndirectPaths(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>, bins: BinGeometry): void {
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const v of Object.values(vertices)) {
+      if (v.kind !== 'intermediate') continue
+      const touching = Object.values(legs).filter((l) => l.vertexA === v.id || l.vertexB === v.id)
+      if (touching.length !== 2) continue
+      const [leg1, leg2] = touching
+      const outward1 = legAngleAtVertex(leg1, v.id)
+      const outward2 = legAngleAtVertex(leg2, v.id)
+      if (binIndex(outward1, bins) !== binIndex(outward2 + Math.PI, bins)) continue
+
+      const flapA = otherEndpoint(leg1, v.id)
+      const flapB = otherEndpoint(leg2, v.id)
+      const angle = legAngleAtVertex(leg1, flapA) // direction flapA -> v -> flapB, collinear so this equals flapA -> flapB
+      delete legs[leg1.id]
+      delete legs[leg2.id]
+      delete vertices[v.id]
+      const mergedId = nanoid()
+      legs[mergedId] = { id: mergedId, kind: 'direct', vertexA: flapA, vertexB: flapB, angle }
+      changed = true
+      break
+    }
+  }
+}
+
+const NEAR_LINE_EPS = 2e-3
+
+/** Where `p` falls relative to segment `a`-`c`: `t` is its parametric
+ * position (0 at `a`, 1 at `c`; outside `[0,1]` means beyond an endpoint),
+ * `perpDist` its perpendicular distance from the infinite line through
+ * `a`/`c`. Degenerate (`a` == `c`) reports as infinitely far so callers
+ * never treat it as "on" the segment. */
+function pointToSegmentInfo(p: Point, a: Point, c: Point): { t: number; perpDist: number } {
+  const dx = c.x - a.x
+  const dy = c.y - a.y
+  const lenSq = dx * dx + dy * dy
+  if (lenSq < 1e-12) return { t: -1, perpDist: Infinity }
+  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq
+  const perpDist = Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+  return { t, perpDist }
+}
+
+/** Finds every direct leg with one or more *other* vertices sitting on (or
+ * within `NEAR_LINE_EPS` of) its segment, strictly between its two
+ * endpoints -- common around the border, where the hull ring (see
+ * `convexHullRing`) correctly excludes a flap collinear with two others as
+ * not a true hull vertex, so the hull chain connects straight past it
+ * (A-C) instead of stopping at it (A-B, B-C). Replaces each such leg with
+ * a chain through every found vertex in order along the segment (handling
+ * more than one), reusing the original leg's exact angle for every link
+ * (still collinear by construction, so no re-derivation/re-snapping).
+ * Mutates `vertices` positions untouched, only `legs`; no rank check --
+ * splitting a leg through a vertex already sitting on it formalizes an
+ * existing geometric fact rather than introducing a new one, so this is
+ * expected to always be consistent (and `solveMinPerturbation` degrades
+ * gracefully via least-squares even if a pathological input disagrees). */
+export function splitDirectLegsThroughNearbyVertices(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>): void {
+  for (const leg of Object.values(legs)) {
+    if (leg.kind !== 'direct') continue
+    const a = vertices[leg.vertexA]
+    const c = vertices[leg.vertexB]
+    if (!a || !c) continue
+    const between = Object.values(vertices)
+      .filter((v) => v.id !== leg.vertexA && v.id !== leg.vertexB)
+      .map((v) => ({ id: v.id, ...pointToSegmentInfo(v, a, c) }))
+      .filter((info) => info.t > 1e-6 && info.t < 1 - 1e-6 && info.perpDist < NEAR_LINE_EPS)
+      .sort((x, y) => x.t - y.t)
+    if (between.length === 0) continue
+
+    const angle = legAngleAtVertex(leg, leg.vertexA) // direction A -> C, reused for every sub-leg (same forward direction)
+    delete legs[leg.id]
+    const chain = [leg.vertexA, ...between.map((b) => b.id), leg.vertexB]
+    for (let i = 0; i < chain.length - 1; i++) {
+      const id = nanoid()
+      legs[id] = { id, kind: 'direct', vertexA: chain[i], vertexB: chain[i + 1], angle }
+    }
+  }
+}
+
 /** One-way seed: snapshots the current packing's flap positions and
  * constraints into a fresh, independent graph (see `TilingGraphState.
  * constraints`'s doc -- edits from here on never flow back to packing).
@@ -456,6 +551,14 @@ export async function seedTilingGraph(
       // Best-effort suggestion only -- the hull anchors + chain above are
       // already a complete, valid seed on their own.
     }
+  }
+
+  // Layer 3: post-process degeneracies that layers 1-2 routinely produce
+  // (see each function's own doc) -- run the merge before the split since
+  // a merged direct leg can itself need splitting, but not vice versa.
+  if (bins) {
+    mergeCollinearIndirectPaths(vertices, legs, bins)
+    splitDirectLegsThroughNearbyVertices(vertices, legs)
   }
 
   const stagingGraph: TilingGraphState = {

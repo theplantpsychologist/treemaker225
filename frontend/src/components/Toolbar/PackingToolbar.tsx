@@ -1,7 +1,6 @@
 import { useAppStore } from '../../state/store'
 import { SymmetryModeSelector } from './SymmetryModeSelector'
 import { ScaleSlider } from './ScaleSlider'
-import { SettingsModal } from './SettingsModal'
 import './PackingToolbar.css'
 
 export function PackingToolbar() {
@@ -31,7 +30,6 @@ export function PackingToolbar() {
       <button className="solve-button" onClick={() => void runSolve()} disabled={solving || !tree.rootId}>
         {solving ? 'Optimizing…' : 'Optimize'}
       </button>
-      <SettingsModal />
     </div>
   )
 }

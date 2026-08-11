@@ -937,6 +937,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: preview.error })
       return
     }
+    const { options } = preview.candidates
+    // A lone direct option means the raw angle is already within 5deg of a
+    // snap direction (see `computePathOptions`'s offerIndirect gate) --
+    // nothing to choose between, so commit it immediately instead of
+    // making the user click a single dashed line barely distinguishable
+    // from the eventual solid one.
+    if (options.length === 1 && options[0].kind === 'direct') {
+      const result = commitPathOption(tilingGraph, state.tree, state.hyperparams, nextIds[0], nextIds[1], options[0])
+      if ('error' in result) {
+        set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: result.error })
+        return
+      }
+      get().pushUndoSnapshot()
+      set({ tilingGraph: result.graph, tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: null })
+      return
+    }
     set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: preview.candidates, tilingSelectedLegId: null, tilingError: null })
   },
 

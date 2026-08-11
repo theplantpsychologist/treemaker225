@@ -27,7 +27,7 @@ export function SettingsModal() {
               <h2>Display</h2>
               <label
                 className="settings-field settings-checkbox"
-                title="Hide any part of a flap/river that spills past the paper square"
+                title="Hide any part of a flap/river/ridge/hinge that spills past the paper square, in either editor"
               >
                 <input
                   type="checkbox"

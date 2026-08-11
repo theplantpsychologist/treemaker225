@@ -9,6 +9,7 @@ import { PackingToolbar } from './components/Toolbar/PackingToolbar'
 import { ShapeSelector } from './components/Toolbar/ShapeSelector'
 import { UndoRedoControls } from './components/UndoRedo/UndoRedoControls'
 import { ThemeToggle } from './components/Theme/ThemeToggle'
+import { SettingsModal } from './components/Toolbar/SettingsModal'
 import { useAppStore } from './state/store'
 import { useShapeTheme } from './hooks/useShapeTheme'
 
@@ -94,6 +95,7 @@ function App() {
         <ShapeSelector />
         <UndoRedoControls />
         <ThemeToggle />
+        <SettingsModal />
       </header>
       <main className="app-main" ref={mainRef}>
         <section className="pane tree-pane" style={{ flex: `0 0 ${splitPercent}%` }}>

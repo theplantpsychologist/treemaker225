@@ -3,6 +3,8 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useAppStore } from '../../state/store'
 import { buildShapePoints, extraRotationFor } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
+import { computeFaces } from '../../geometry/planarFaces'
+import { computeHinges, computeStraightSkeleton } from '../../geometry/straightSkeleton'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import { VIEW_SIZE } from '../PackingEditor/usePackingEditorInteraction'
 import { useTilingEditorInteraction } from './useTilingEditorInteraction'
@@ -66,6 +68,7 @@ export function TilingEditorCanvas() {
   const dodecagonExtraRotation = useAppStore((s) => s.hyperparams.dodecagonExtraRotation)
   const extraRotation = extraRotationFor(shape, hexagonExtraRotation, squareExtraRotation, dodecagonExtraRotation)
   const constraints = useAppStore((s) => s.constraints)
+  const clipToSquare = useAppStore((s) => s.clipToSquare)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
@@ -145,6 +148,31 @@ export function TilingEditorCanvas() {
     return { flaps: flapList, rivers: riverList }
   }, [tree, packing, tilingGraph, constraints, shape, extraRotation])
 
+  // Topology only -- recomputes when a path is created or deleted, not on
+  // every drag frame. `tilingGraph.legs` is a stable reference across a
+  // drag (the store only spreads `vertices` on drag, see
+  // `state/store.ts`'s `dragTilingVertex`-style action), so this
+  // useMemo's dependency correctly gates on topology changes alone.
+  const faces = useMemo(() => {
+    if (!tilingGraph) return []
+    return computeFaces(tilingGraph.vertices, Object.values(tilingGraph.legs))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tilingGraph?.legs])
+
+  // Geometry -- recomputes every render (including every drag frame) since
+  // it depends on live vertex positions, not just topology.
+  const skeletons = useMemo(() => {
+    if (!tilingGraph) return []
+    return faces
+      .map((face) => {
+        const polygon = face.vertexIds.map((id) => tilingGraph.vertices[id])
+        const skeleton = computeStraightSkeleton(polygon)
+        if (!skeleton) return null
+        return { faceId: face.id, skeleton, hinges: computeHinges(skeleton.nodes, skeleton.edges) }
+      })
+      .filter((s): s is { faceId: string; skeleton: NonNullable<ReturnType<typeof computeStraightSkeleton>>; hinges: ReturnType<typeof computeHinges> } => s !== null)
+  }, [faces, tilingGraph])
+
   return (
     <div className="tiling-editor-wrapper">
       <svg
@@ -155,6 +183,11 @@ export function TilingEditorCanvas() {
         onPointerUp={onSvgPointerUp}
         onPointerLeave={onSvgPointerUp}
       >
+        <defs>
+          <clipPath id="tiling-square-clip">
+            <rect x={0} y={0} width={VIEW_SIZE} height={VIEW_SIZE} />
+          </clipPath>
+        </defs>
         <rect
           className="tiling-editor-backdrop"
           x={pan.viewBox.x}
@@ -165,12 +198,38 @@ export function TilingEditorCanvas() {
         />
         <rect className="tiling-square" x={0} y={0} width={VIEW_SIZE} height={VIEW_SIZE} onPointerDown={onBackgroundPointerDown} />
 
-        {rivers.map((r) => (
-          <path key={`tiling-river-${r.key}`} className="tiling-river" fillRule="evenodd" d={r.pathD} />
-        ))}
-        {flaps.map((f) => (
-          <polygon key={`tiling-flap-${f.key}`} className="tiling-flap" points={f.points} />
-        ))}
+        <g clipPath={clipToSquare ? 'url(#tiling-square-clip)' : undefined}>
+          {rivers.map((r) => (
+            <path key={`tiling-river-${r.key}`} className="tiling-river" fillRule="evenodd" d={r.pathD} />
+          ))}
+          {flaps.map((f) => (
+            <polygon key={`tiling-flap-${f.key}`} className="tiling-flap" points={f.points} />
+          ))}
+
+          {skeletons.flatMap(({ faceId, skeleton }) =>
+            skeleton.ridges.map((r, i) => {
+              const [x1, y1] = toScreen(r.start.x, r.start.y)
+              const [x2, y2] = toScreen(r.end.x, r.end.y)
+              return (
+                <line
+                  key={`tiling-ridge-${faceId}-${i}`}
+                  className={`tiling-ridge${r.isReflexBoundary ? ' concave' : ''}`}
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                />
+              )
+            }),
+          )}
+          {skeletons.flatMap(({ faceId, hinges }) =>
+            hinges.map((h, i) => {
+              const [x1, y1] = toScreen(h.from.x, h.from.y)
+              const [x2, y2] = toScreen(h.to.x, h.to.y)
+              return <line key={`tiling-hinge-${faceId}-${i}`} className="tiling-hinge" x1={x1} y1={y1} x2={x2} y2={y2} />
+            }),
+          )}
+        </g>
 
         {tilingGraph &&
           Object.values(tilingGraph.legs).map((leg) => {
@@ -205,6 +264,7 @@ export function TilingEditorCanvas() {
               return (
                 // eslint-disable-next-line jsx-a11y/no-static-element-interactions
                 <g key={`tiling-path-option-${i}`} className="tiling-bend-preview" onClick={() => chooseTilingPathOption(i)}>
+                  <line className="tiling-bend-preview-hit" x1={ax} y1={ay} x2={bx} y2={by} />
                   <line x1={ax} y1={ay} x2={bx} y2={by} />
                 </g>
               )
@@ -213,6 +273,8 @@ export function TilingEditorCanvas() {
             return (
               // eslint-disable-next-line jsx-a11y/no-static-element-interactions
               <g key={`tiling-path-option-${i}`} className="tiling-bend-preview" onClick={() => chooseTilingPathOption(i)}>
+                <line className="tiling-bend-preview-hit" x1={ax} y1={ay} x2={px} y2={py} />
+                <line className="tiling-bend-preview-hit" x1={bx} y1={by} x2={px} y2={py} />
                 <line x1={ax} y1={ay} x2={px} y2={py} />
                 <line x1={bx} y1={by} x2={px} y2={py} />
                 <circle cx={px} cy={py} r={5} />
