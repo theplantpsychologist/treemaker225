@@ -6,7 +6,7 @@ import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeFaces } from '../../geometry/planarFaces'
 import { computeHinges, computeStraightSkeleton } from '../../geometry/straightSkeleton'
 import { signatureOf } from '../../geometry/tilingCotangent'
-import { castHingeRay } from '../../geometry/hingeRayCast'
+import { castHingeRay, prepareMirrors } from '../../geometry/hingeRayCast'
 import type { MirrorSegment } from '../../geometry/hingeRayCast'
 import type { Point } from '../../geometry/symmetry'
 import { DEFAULT_INITIAL_ZOOM_OUT_FACTOR, paddedInitialViewBox, useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
@@ -36,12 +36,15 @@ function toScreen(x: number, y: number): [number, number] {
 /** The physical paper's edge, in the same unit-square coordinates as every
  * tiling vertex/skeleton position -- a hinge ray reaching one of these
  * segments has run off the paper and stops there (see `castHingeRay`). */
-const UNIT_SQUARE_BOUNDARY: MirrorSegment[] = [
+const UNIT_SQUARE_BOUNDARY_SEGMENTS: MirrorSegment[] = [
   { a: { x: 0, y: 0 }, b: { x: 1, y: 0 } },
   { a: { x: 1, y: 0 }, b: { x: 1, y: 1 } },
   { a: { x: 1, y: 1 }, b: { x: 0, y: 1 } },
   { a: { x: 0, y: 1 }, b: { x: 0, y: 0 } },
 ]
+// Prepared once at module scope, not per render -- these 4 segments never
+// change (see `prepareMirrors`'s doc).
+const UNIT_SQUARE_BOUNDARY = prepareMirrors(UNIT_SQUARE_BOUNDARY_SEGMENTS)
 
 interface FlapInfo {
   key: string
@@ -101,6 +104,7 @@ export function TilingEditorCanvas() {
   const clipToSquare = useAppStore((s) => s.clipToSquare)
   const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
   const tilingMinFeatureSize = useAppStore((s) => s.hyperparams.tilingMinFeatureSize)
+  const tilingMaxHingeBounces = useAppStore((s) => s.hyperparams.tilingMaxHingeBounces)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
@@ -160,6 +164,22 @@ export function TilingEditorCanvas() {
     const bands = computeRiverBands(tree, positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
     const pathByNodeId = new Map(bands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
 
+    // Built once (O(V) + O(L)) instead of re-scanning every vertex/leg per
+    // leaf node below (which was O((V+L) * leaves) overall) -- same
+    // understaffed-count result either way, since a flap vertex's id and
+    // leg-degree don't change within this single computation.
+    const flapVertexByFlapId = new Map<string, { id: string }>()
+    const legCountByVertexId = new Map<string, number>()
+    if (tilingGraph) {
+      for (const v of Object.values(tilingGraph.vertices)) {
+        if (v.kind === 'flap' && v.flapId) flapVertexByFlapId.set(v.flapId, v)
+      }
+      for (const leg of Object.values(tilingGraph.legs)) {
+        legCountByVertexId.set(leg.vertexA, (legCountByVertexId.get(leg.vertexA) ?? 0) + 1)
+        legCountByVertexId.set(leg.vertexB, (legCountByVertexId.get(leg.vertexB) ?? 0) + 1)
+      }
+    }
+
     for (const node of Object.values(tree.nodes)) {
       if (!node.parentId || node.length == null) continue
 
@@ -178,12 +198,8 @@ export function TilingEditorCanvas() {
         // structurally meaningful -- undefined (no tiling graph yet, or this
         // leaf's flap vertex isn't in it for some other reason) never counts
         // as understaffed, only a real, too-low leg count does.
-        const flapVertex = tilingGraph
-          ? Object.values(tilingGraph.vertices).find((v) => v.kind === 'flap' && v.flapId === node.id)
-          : undefined
-        const legCount = flapVertex
-          ? Object.values(tilingGraph!.legs).filter((l) => l.vertexA === flapVertex.id || l.vertexB === flapVertex.id).length
-          : null
+        const flapVertex = flapVertexByFlapId.get(node.id)
+        const legCount = flapVertex ? (legCountByVertexId.get(flapVertex.id) ?? 0) : null
         flapList.push({
           key: node.id,
           points: toPointsAttr(shapePoints, VIEW_SIZE),
@@ -209,6 +225,24 @@ export function TilingEditorCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilingGraph?.legs])
 
+  // Topology only, same reasoning as `faces` above -- a vertex-pair -> leg
+  // id lookup never depends on live positions, so it's memoized separately
+  // from `skeletons` below (which DOES need to rerun every drag frame for
+  // the position-dependent skeleton itself). Without this, `skeletons`
+  // used to redo an O(legs) `.find()` per face edge on every single drag
+  // frame even though its result couldn't have changed since the last
+  // topology edit.
+  const legIdByVertexPair = useMemo(() => {
+    const map = new Map<string, string>()
+    if (!tilingGraph) return map
+    for (const leg of Object.values(tilingGraph.legs)) {
+      map.set(`${leg.vertexA}|${leg.vertexB}`, leg.id)
+      map.set(`${leg.vertexB}|${leg.vertexA}`, leg.id)
+    }
+    return map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tilingGraph?.legs])
+
   // Geometry -- recomputes every render (including every drag frame) since
   // it depends on live vertex positions, not just topology. `legIdByEdgeIndex`
   // maps each of `computeStraightSkeleton`'s internal `edges[i]` (always
@@ -226,7 +260,7 @@ export function TilingEditorCanvas() {
         const n = face.vertexIds.length
         const legIdByEdgeIndex = face.vertexIds.map((a, i) => {
           const b = face.vertexIds[(i + 1) % n]
-          return Object.values(tilingGraph.legs).find((l) => (l.vertexA === a && l.vertexB === b) || (l.vertexA === b && l.vertexB === a))?.id
+          return legIdByVertexPair.get(`${a}|${b}`)
         })
         return { faceId: face.id, skeleton, legIdByEdgeIndex }
       })
@@ -239,7 +273,7 @@ export function TilingEditorCanvas() {
           legIdByEdgeIndex: (string | undefined)[]
         } => s !== null,
       )
-  }, [faces, tilingGraph])
+  }, [faces, tilingGraph, legIdByVertexPair])
 
   // Every hinge extended into a full reflected ray -- see
   // `geometry/hingeRayCast.ts`'s module doc. Mirror candidates are global
@@ -257,7 +291,10 @@ export function TilingEditorCanvas() {
     const ridgeMirrors: MirrorSegment[] = skeletons.flatMap(({ skeleton }) =>
       skeleton.ridges.map((r) => ({ a: r.start, b: r.end })),
     )
-    const mirrors = [...legMirrors, ...ridgeMirrors]
+    // Prepared once here rather than inside `castHingeRay` itself, since
+    // every hinge below reuses this same array across up to
+    // `tilingMaxHingeBounces` iterations each -- see `prepareMirrors`'s doc.
+    const mirrors = prepareMirrors([...legMirrors, ...ridgeMirrors])
     const vertexPoints: Point[] = [
       ...Object.values(tilingGraph.vertices).map((v) => ({ x: v.x, y: v.y })),
       ...skeletons.flatMap(({ skeleton }) => skeleton.nodes.map((n) => n.position)),
@@ -273,11 +310,19 @@ export function TilingEditorCanvas() {
           // is what makes the ray actually continue past that trivial
           // round trip instead of terminating on its own starting point.
           const otherVertices = vertexPoints.filter((p) => Math.hypot(p.x - h.from.x, p.y - h.from.y) >= tilingMinFeatureSize)
-          const points = castHingeRay(h.from, initialAngle, mirrors, UNIT_SQUARE_BOUNDARY, otherVertices, tilingMinFeatureSize)
+          const points = castHingeRay(
+            h.from,
+            initialAngle,
+            mirrors,
+            UNIT_SQUARE_BOUNDARY,
+            otherVertices,
+            tilingMinFeatureSize,
+            tilingMaxHingeBounces,
+          )
           return { key: `${faceId}-${i}`, points }
         }),
     )
-  }, [skeletons, tilingGraph, tilingMinFeatureSize])
+  }, [skeletons, tilingGraph, tilingMinFeatureSize, tilingMaxHingeBounces])
 
   // Nodes' `legIds` (via `legIdByEdgeIndex`) -- computed once per skeletons
   // recompute, reused by both the stale-lock-release effect below and the
@@ -351,19 +396,26 @@ export function TilingEditorCanvas() {
             </>
           )}
 
-          {skeletonNodesWithLegIds.flatMap(({ faceId, skeleton, nodes }) =>
-            skeleton.ridges.map((r, i) => {
+          {skeletonNodesWithLegIds.flatMap(({ faceId, skeleton, nodes }) => {
+            // Built once per face rather than re-scanned per ridge endpoint
+            // (`nodes.find(...)` twice per ridge) -- `r.start`/`r.end` are
+            // always the exact same `Point` object a node's own `position`
+            // was built from (see `straightSkeleton.ts`'s `closeRidge`), so
+            // an exact-value key is reliable, no distance-tolerance match
+            // needed.
+            const nodeByPosKey = new Map<string, (typeof nodes)[number]>()
+            for (const n of nodes) nodeByPosKey.set(`${n.node.position.x}|${n.node.position.y}`, n)
+            const nodeAt = (p: { x: number; y: number }) => nodeByPosKey.get(`${p.x}|${p.y}`)
+            return skeleton.ridges.map((r, i) => {
               const [x1, y1] = toScreen(r.start.x, r.start.y)
               const [x2, y2] = toScreen(r.end.x, r.end.y)
               const className = `tiling-ridge${r.isReflexBoundary ? ' concave' : ''}`
               // An "interior" ridge (both endpoints interior straight-skeleton
               // nodes, not the original polygon boundary) is clickable --
-              // resolve each endpoint to its owning node's legIds by position
-              // match, then offer the same invisible-wide-hit-line technique
-              // already used for path-preview lines.
+              // resolve each endpoint to its owning node's legIds, then offer
+              // the same invisible-wide-hit-line technique already used for
+              // path-preview lines.
               if (!r.startIsBoundary && !r.endIsBoundary) {
-                const nodeAt = (p: { x: number; y: number }) =>
-                  nodes.find(({ node }) => Math.hypot(node.position.x - p.x, node.position.y - p.y) < 1e-6)
                 const startNode = nodeAt(r.start)
                 const endNode = nodeAt(r.end)
                 if (startNode && endNode && startNode.legIds.length >= 3 && endNode.legIds.length >= 3) {
@@ -386,8 +438,8 @@ export function TilingEditorCanvas() {
                 }
               }
               return <line key={`tiling-ridge-${faceId}-${i}`} className={className} x1={x1} y1={y1} x2={x2} y2={y2} />
-            }),
-          )}
+            })
+          })}
           {hingeRays.map(({ key, points }) => (
             <polyline
               key={`tiling-hinge-${key}`}

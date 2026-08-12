@@ -155,6 +155,19 @@ export function SettingsModal() {
                   <option value="trust-constr">trust-constr</option>
                 </select>
               </label>
+              <label
+                className="settings-field"
+                title="Random seed for the restart schedule — leave blank for a fresh (non-reproducible) random seed every solve"
+              >
+                seed
+                <input
+                  type="number"
+                  step={1}
+                  placeholder="random"
+                  value={hyperparams.seed ?? ''}
+                  onChange={(e) => setHyperparams({ seed: e.target.value === '' ? null : Number(e.target.value) })}
+                />
+              </label>
               </section>
               <section className="settings-section">
               <h2>Axial topology</h2>
@@ -203,147 +216,43 @@ export function SettingsModal() {
                   onChange={(e) => setHyperparams({ tilingMinFeatureSize: Number(e.target.value) })}
                 />
               </label>
-              </section>
-              <section className="settings-section">
-              <h2>Path network solver</h2>
-              <label className="settings-field" title="Weight on the flap-displacement penalty -- larger values keep flaps closer to where they started">
-                displacement weight (C1)
+              <label
+                className="settings-field"
+                title="How close (in degrees) a candidate path may sit to an already-snapped direction before it's hidden from the path picker as too ambiguous to offer -- keep well under 7.5° or the picker can occasionally offer nothing for a worst-angle pair"
+              >
+                path option ambiguity tolerance (°)
                 <input
                   type="number"
                   min={0}
-                  step={0.01}
-                  value={hyperparams.pathNetworkC1}
-                  onChange={(e) => setHyperparams({ pathNetworkC1: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Weight on the length-change term -- rewards a length growing relative to the whole tree, penalizes it shrinking">
-                length-change weight (C2)
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={hyperparams.pathNetworkC2}
-                  onChange={(e) => setHyperparams({ pathNetworkC2: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Small penalty per active intermediate (bend) point, biasing the solve toward fewer/simpler indirect paths">
-                bend-point weight (C3)
-                <input
-                  type="number"
-                  min={0}
-                  step={0.001}
-                  value={hyperparams.pathNetworkC3}
-                  onChange={(e) => setHyperparams({ pathNetworkC3: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="How many outer continuation steps to run before giving up on reaching a fully discrete path selection">
-                anneal outer iterations
-                <input
-                  type="number"
-                  min={1}
-                  value={hyperparams.pathNetworkAnnealOuterIters}
-                  onChange={(e) => setHyperparams({ pathNetworkAnnealOuterIters: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Initial weight of the boolean-relaxation penalty, before it starts growing each outer iteration">
-                anneal weight start
-                <input
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  value={hyperparams.pathNetworkAnnealWeightStart}
-                  onChange={(e) => setHyperparams({ pathNetworkAnnealWeightStart: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="How much the boolean-relaxation penalty weight multiplies by each outer iteration">
-                anneal weight growth
-                <input
-                  type="number"
-                  min={1}
+                  max={10}
                   step={0.5}
-                  value={hyperparams.pathNetworkAnnealWeightGrowth}
-                  onChange={(e) => setHyperparams({ pathNetworkAnnealWeightGrowth: Number(e.target.value) })}
+                  value={hyperparams.tilingPathOfferToleranceDeg}
+                  onChange={(e) => setHyperparams({ tilingPathOfferToleranceDeg: Number(e.target.value) })}
                 />
               </label>
-              <label className="settings-field" title="Every relaxed path/leg selection must land within this of 0 or 1 for the continuation loop to stop early">
-                boolean convergence tolerance
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={hyperparams.pathNetworkBoolEps}
-                  onChange={(e) => setHyperparams({ pathNetworkBoolEps: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Basin-hopping restarts wrapping the whole path-network solve, mirroring the main Optimize button's restarts">
-                path-network restarts
+              <label
+                className="settings-field"
+                title="Cap on how many times a hinge-crease preview ray reflects before giving up -- raise this if a dense/complex tiling's hinge lines look visibly cut off"
+              >
+                max hinge ray bounces
                 <input
                   type="number"
                   min={1}
-                  value={hyperparams.pathNetworkNRestarts}
-                  onChange={(e) => setHyperparams({ pathNetworkNRestarts: Number(e.target.value) })}
+                  step={5}
+                  value={hyperparams.tilingMaxHingeBounces}
+                  onChange={(e) => setHyperparams({ tilingMaxHingeBounces: Number(e.target.value) })}
                 />
               </label>
-              <label className="settings-field" title="Largest per-restart random perturbation for the path-network solve's basin hopping">
-                path-network max noise amplitude
+              <label
+                className="settings-field settings-checkbox"
+                title="Require every flap's non-boundary-facing side to have no gap of 180 degrees or more between selected crease directions when seeding a tiling -- turn off to allow a gap of exactly 180 degrees, which can let the solver settle for cheaper candidates on a flap that doesn't strictly need full coverage"
+              >
                 <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={hyperparams.pathNetworkMaxNoiseAmplitude}
-                  onChange={(e) => setHyperparams({ pathNetworkMaxNoiseAmplitude: Number(e.target.value) })}
+                  type="checkbox"
+                  checked={hyperparams.tilingStrictConcavity}
+                  onChange={(e) => setHyperparams({ tilingStrictConcavity: e.target.checked })}
                 />
-              </label>
-              <label className="settings-field" title="Upper bound on any length variable, as a multiple of its initial value -- prevents a length with no other constraint from growing without limit">
-                length growth cap (x initial)
-                <input
-                  type="number"
-                  min={1}
-                  step={0.1}
-                  value={hyperparams.pathNetworkGrowthCap}
-                  onChange={(e) => setHyperparams({ pathNetworkGrowthCap: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Big-M slack for angle-gated constraints at the start of the anneal schedule -- kept tighter than length since an off-angle crease is a worse defect">
-                angle rigidity (big-M start)
-                <input
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  value={hyperparams.pathNetworkMAngleStart}
-                  onChange={(e) => setHyperparams({ pathNetworkMAngleStart: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Big-M slack for length-gated constraints at the start of the anneal schedule">
-                length rigidity (big-M start)
-                <input
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  value={hyperparams.pathNetworkMLengthStart}
-                  onChange={(e) => setHyperparams({ pathNetworkMLengthStart: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="How much both big-M slacks shrink by every outer anneal iteration">
-                rigidity decay per iteration
-                <input
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={hyperparams.pathNetworkMDecay}
-                  onChange={(e) => setHyperparams({ pathNetworkMDecay: Number(e.target.value) })}
-                />
-              </label>
-              <label className="settings-field" title="Smallest either big-M slack is allowed to shrink to during the anneal schedule">
-                rigidity floor
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={hyperparams.pathNetworkMFloor}
-                  onChange={(e) => setHyperparams({ pathNetworkMFloor: Number(e.target.value) })}
-                />
+                strict concavity coverage
               </label>
               </section>
               </div>

@@ -84,6 +84,14 @@ export function computeOverlapAreas(
   shape: ShapeKind,
   symmetryMode: SymmetryMode = 'none',
   extraRotation = false,
+  // Optional: the caller's own already-computed river bands, so this
+  // doesn't redo the same `computeRiverBands` walk (which itself does a
+  // clipper2-ts `union`/`inflatePaths` per internal node -- not free) a
+  // second time on every render just because two different `useMemo`s in
+  // `PackingEditorCanvas.tsx` happen to need the same rivers for different
+  // purposes. Falls back to computing them here when omitted, so this
+  // function is still fully self-contained for any other caller.
+  precomputedRivers?: RiverBand[],
 ): OverlapArea[] {
   const areas: OverlapArea[] = []
 
@@ -101,7 +109,7 @@ export function computeOverlapAreas(
     areas.push({ a, b, rings: fromClipperPaths(result) })
   }
 
-  const rivers: RiverBand[] = computeRiverBands(tree, positions, scale, shape, symmetryMode, extraRotation)
+  const rivers: RiverBand[] = precomputedRivers ?? computeRiverBands(tree, positions, scale, shape, symmetryMode, extraRotation)
   for (let i = 0; i < rivers.length; i++) {
     for (let j = i + 1; j < rivers.length; j++) {
       const result = intersect(toClipperPaths(rivers[i].rings), toClipperPaths(rivers[j].rings), FillRule.NonZero)

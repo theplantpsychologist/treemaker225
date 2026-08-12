@@ -58,10 +58,10 @@ from app.schemas.constraints import Constraints
 
 # The strict "<180 degrees" concavity mode -- every cyclic window of this
 # many consecutive direction-bins must contain at least one selected
-# direction. A future advanced setting can relax this to `n_bins // 2`
-# (allowing a gap of exactly 180 degrees) by passing strict=False through to
-# `_select_candidates_via_milp`/`_fill_remaining_gaps_with_bends` -- not
-# wired up to a hyperparameter yet.
+# direction. Relaxing this to `n_bins // 2` (allowing a gap of exactly 180
+# degrees) is wired up to `Hyperparams.tiling_strict_concavity` -- see
+# `solve_tiling`'s `strict` parameter, threaded through to
+# `_select_candidates_via_milp`/`_fill_remaining_gaps_with_bends` below.
 _EDGE_OUTWARD_ANGLE = {"left": math.pi, "right": 0.0, "top": math.pi / 2, "bottom": -math.pi / 2}
 
 
@@ -377,6 +377,7 @@ def solve_tiling(
     positions: Dict[str, Tuple[float, float]],
     constraints: Constraints,
     candidates: TilingCandidates,
+    strict: bool = True,
 ) -> TilingSolveResult:
     pos_col = {leaf_id: 2 * i for i, leaf_id in enumerate(leaf_ids)}
     x0 = np.zeros(2 * len(leaf_ids))
@@ -390,7 +391,7 @@ def solve_tiling(
     group_by_id = candidates.point_groups
     half_legs = candidates.half_legs
 
-    selected_ids = _select_candidates_via_milp(leaf_ids, positions, constraints, candidates)
+    selected_ids = _select_candidates_via_milp(leaf_ids, positions, constraints, candidates, strict)
 
     # Every MILP-selected candidate's rows are added unconditionally (no rank
     # check -- see module docstring).
@@ -400,7 +401,7 @@ def solve_tiling(
         else:
             accepted_rows.extend(_point_group_rows(group_by_id[cid], half_legs))
 
-    used_bend_ids = _fill_remaining_gaps_with_bends(leaf_ids, positions, constraints, candidates, selected_ids)
+    used_bend_ids = _fill_remaining_gaps_with_bends(leaf_ids, positions, constraints, candidates, selected_ids, strict)
 
     x_star = solve_min_perturbation(accepted_rows, pos_col, x0)
     leaf_positions: Dict[str, Tuple[float, float]] = {}

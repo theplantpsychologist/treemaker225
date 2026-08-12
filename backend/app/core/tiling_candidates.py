@@ -284,12 +284,16 @@ def enumerate_tiling_candidates(
     leg_ids_ordered = list(half_legs_all.keys())
     leg_index = {leg_id: i for i, leg_id in enumerate(leg_ids_ordered)}
     uf_points = _UnionFind(len(leg_ids_ordered))
+    # Grouped by candidate in a single pass over `raw_refs` instead of the
+    # O(pending_count) re-scans of the whole (4x-larger) list this used to
+    # do per candidate (O(pending_count^2) overall, ~O(leaves^4) worst case
+    # since pending_count is O(leaves^2)) -- same groups either way, since
+    # every candidate's 4 refs are already tagged with their own index.
+    refs_by_candidate: Dict[int, Dict[str, str]] = {}
+    for global_idx, (flap, angle, cand, role) in enumerate(raw_refs):
+        refs_by_candidate.setdefault(cand, {})[role] = ref_to_leg_id[global_idx]
     for candidate_idx in range(pending_count):
-        refs_for_candidate = {
-            role: ref_to_leg_id[global_idx]
-            for global_idx, (flap, angle, cand, role) in enumerate(raw_refs)
-            if cand == candidate_idx
-        }
+        refs_for_candidate = refs_by_candidate[candidate_idx]
         uf_points.union(leg_index[refs_for_candidate["a1"]], leg_index[refs_for_candidate["b1"]])
         uf_points.union(leg_index[refs_for_candidate["a2"]], leg_index[refs_for_candidate["b2"]])
 

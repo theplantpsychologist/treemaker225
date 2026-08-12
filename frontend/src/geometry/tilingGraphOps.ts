@@ -95,10 +95,15 @@ export function decomposeBend(pa: Point, pb: Point, thetaLo: number, thetaHi: nu
   return [config1, config2]
 }
 
-/** How close (in degrees) a raw angle must be to a snap direction, or to
- * the midpoint between two snap directions, before a candidate path is
- * hidden from the picker as visually-ambiguous. See `computePathOptions`. */
-const OFFER_TOLERANCE_DEG = 5
+/** Default for `computePathOptions`'s `offerToleranceDeg` -- how close (in
+ * degrees) a raw angle must be to a snap direction, or to the midpoint
+ * between two snap directions, before a candidate path is hidden from the
+ * picker as visually-ambiguous. User-tunable via
+ * `hyperparams.tilingPathOfferToleranceDeg`; keep it comfortably under a
+ * quarter of the tightest shape's period (dodecagon's 30°, i.e. under 7.5°)
+ * or the picker can offer zero options for a rare worst-angle pair -- see
+ * `computePathOptions`'s doc for why the default holds that margin. */
+const DEFAULT_OFFER_TOLERANCE_DEG = 5
 
 export type PathOption =
   | { kind: 'direct'; angle: number }
@@ -113,21 +118,29 @@ export type PathOption =
  * already close enough to a snap direction that bending would be a
  * pointless, barely-visible detour. Both conditions can hold at once (the
  * common "clearly off-axis but not right at the worst angle" case) for
- * every shape here, since `period/2 > 2 * OFFER_TOLERANCE_DEG` always
- * holds (hexagon 30°, octagon 22.5°, dodecagon 15°, square 45° half-periods
- * vs. a 5°+5° carve-out) -- so this can return 0, 1, 2, or 3 options, never
- * requiring a forced fallback. */
-export function computePathOptions(pa: Point, pb: Point, bins: BinGeometry): PathOption[] {
+ * every shape here at the default tolerance, since `period/2 > 2 *
+ * offerToleranceDeg` always holds (hexagon 30°, octagon 22.5°, dodecagon
+ * 15°, square 45° half-periods vs. a 5°+5° carve-out) -- so this can
+ * return 0, 1, 2, or 3 options, never requiring a forced fallback. Raising
+ * `offerToleranceDeg` well past its default shrinks that margin (see
+ * `DEFAULT_OFFER_TOLERANCE_DEG`'s doc) and can reintroduce the zero-option
+ * case for a pair sitting at the worst angle. */
+export function computePathOptions(
+  pa: Point,
+  pb: Point,
+  bins: BinGeometry,
+  offerToleranceDeg: number = DEFAULT_OFFER_TOLERANCE_DEG,
+): PathOption[] {
   const theta = Math.atan2(pb.y - pa.y, pb.x - pa.x)
   const nearest = snapNearestAngle(theta, bins)
   const periodDeg = (bins.period * 180) / Math.PI
   const distToSnapDeg = Math.abs(((theta - nearest) * 180) / Math.PI)
 
   const options: PathOption[] = []
-  if (distToSnapDeg < periodDeg / 2 - OFFER_TOLERANCE_DEG) {
+  if (distToSnapDeg < periodDeg / 2 - offerToleranceDeg) {
     options.push({ kind: 'direct', angle: nearest })
   }
-  if (distToSnapDeg > OFFER_TOLERANCE_DEG) {
+  if (distToSnapDeg > offerToleranceDeg) {
     const [thetaLo, thetaHi] = bracketAngles(theta, bins)
     const decomposed = decomposeBend(pa, pb, thetaLo, thetaHi)
     decomposed?.forEach((config, i) => options.push({ kind: 'bend', configIndex: i as 0 | 1, config }))

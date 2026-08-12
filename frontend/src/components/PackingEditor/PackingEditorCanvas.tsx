@@ -132,13 +132,24 @@ export function PackingEditorCanvas() {
     }
   }
 
+  // Its own memo (not folded into `flaps`/`rivers` below) so `overlapAreas`
+  // can reuse the exact same computed bands instead of redoing the same
+  // `computeRiverBands` walk a second time every render for no reason --
+  // see `computeOverlapAreas`'s `precomputedRivers` param. Deps are
+  // intentionally narrower than `flaps`/`rivers`'s (`constraints.symmetryMode`
+  // instead of the whole `constraints` object), matching exactly what
+  // `computeRiverBands` itself reads.
+  const riverBands = useMemo(() => {
+    if (!packing) return []
+    return computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
+  }, [tree, packing, shape, constraints.symmetryMode, extraRotation])
+
   const { flaps, rivers } = useMemo(() => {
     const flapList: FlapInfo[] = []
     const riverList: RiverInfo[] = []
     if (!packing) return { flaps: flapList, rivers: riverList }
 
-    const bands = computeRiverBands(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
-    const pathByNodeId = new Map(bands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
+    const pathByNodeId = new Map(riverBands.map((b) => [b.nodeId, ringsToPathD(b.rings, VIEW_SIZE)]))
 
     for (const node of Object.values(tree.nodes)) {
       if (!node.parentId || node.length == null) continue
@@ -167,12 +178,12 @@ export function PackingEditorCanvas() {
       }
     }
     return { flaps: flapList, rivers: riverList }
-  }, [tree, packing, constraints, shape, extraRotation])
+  }, [tree, packing, constraints, shape, extraRotation, riverBands])
 
   const overlapAreas = useMemo(() => {
     if (!packing) return []
-    return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation)
-  }, [tree, packing, shape, constraints.symmetryMode, extraRotation])
+    return computeOverlapAreas(tree, packing.positions, packing.scale, shape, constraints.symmetryMode, extraRotation, riverBands)
+  }, [tree, packing, shape, constraints.symmetryMode, extraRotation, riverBands])
 
   const activePaths = useMemo(() => {
     if (!packing) return []

@@ -21,11 +21,30 @@ import type { Point } from './symmetry'
 const EPS_FORWARD = 1e-9
 const EPS_PARALLEL = 1e-9
 const EPS_SEGMENT = 1e-9
-const MAX_BOUNCES = 60
 
 export interface MirrorSegment {
   a: Point
   b: Point
+}
+
+/** A `MirrorSegment` with its edge vector precomputed -- `castHingeRay` is
+ * called once per hinge, and every call re-scans the *same* `mirrors` array
+ * across up to `maxBounces` iterations, so recomputing `b - a` from scratch
+ * inside the innermost intersection test (as this used to) redid the same
+ * subtraction O(hinges * bounces) times per render for a value that's
+ * actually constant for the whole render. `prepareMirrors` computes it
+ * once per render instead; callers that rebuild their mirror list only on
+ * topology/position changes (see `TilingEditorCanvas.tsx`) get the full
+ * benefit by preparing once and reusing the result across every hinge. */
+export interface PreparedMirror {
+  a: Point
+  b: Point
+  ex: number
+  ey: number
+}
+
+export function prepareMirrors(segments: MirrorSegment[]): PreparedMirror[] {
+  return segments.map((s) => ({ a: s.a, b: s.b, ex: s.b.x - s.a.x, ey: s.b.y - s.a.y }))
 }
 
 function normalizeAngle(theta: number): number {
@@ -61,14 +80,13 @@ function reflectAngle(incoming: number, mirrorAngle: number): number {
 }
 
 /** Forward intersection of the ray `origin + t*(cos angle, sin angle)`,
- * `t > 0`, with the finite segment `[a, b]`. Returns `null` if the ray is
- * parallel to the segment, the intersection falls behind the ray's origin,
- * or it falls outside the segment's own extent. */
-function rayIntersectSegment(origin: Point, angle: number, a: Point, b: Point): { point: Point; t: number } | null {
+ * `t > 0`, with the finite segment `mirror.a` to `mirror.b`. Returns `null`
+ * if the ray is parallel to the segment, the intersection falls behind the
+ * ray's origin, or it falls outside the segment's own extent. */
+function rayIntersectSegment(origin: Point, angle: number, mirror: PreparedMirror): { point: Point; t: number } | null {
   const dx = Math.cos(angle)
   const dy = Math.sin(angle)
-  const ex = b.x - a.x
-  const ey = b.y - a.y
+  const { a, ex, ey } = mirror
   const denom = dx * ey - dy * ex
   if (Math.abs(denom) < EPS_PARALLEL) return null
   const ax = a.x - origin.x
@@ -105,31 +123,34 @@ function isPointOnSquareBoundary(p: Point): boolean {
  * `boundary`'s segments (the physical edge of the paper) or lands within
  * `vertexEps` of any point in `vertices` (an existing tiling vertex or
  * skeleton node, of any kind) -- whichever comes first. Returns the full
- * polyline traced, starting with `origin`. Capped at `MAX_BOUNCES` so a
- * degenerate/near-parallel configuration can't hang the render loop; the
- * partial path traced so far is returned rather than throwing.
+ * polyline traced, starting with `origin`. Capped at `maxBounces` (see
+ * `hyperparams.tilingMaxHingeBounces`) so a degenerate/near-parallel
+ * configuration -- or a genuinely unresolved "billiard" reflection path
+ * that never reaches a vertex or the boundary -- can't hang the render
+ * loop; the partial path traced so far is returned rather than throwing.
  */
 export function castHingeRay(
   origin: Point,
   initialAngle: number,
-  mirrors: MirrorSegment[],
-  boundary: MirrorSegment[],
+  mirrors: PreparedMirror[],
+  boundary: PreparedMirror[],
   vertices: Point[],
   vertexEps: number,
+  maxBounces: number,
 ): Point[] {
   const points: Point[] = [origin]
   let current = origin
   let angle = initialAngle
   let skipIndex = -1
 
-  for (let bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+  for (let bounce = 0; bounce < maxBounces; bounce++) {
     let bestT = Infinity
     let bestPoint: Point | null = null
     let bestMirrorIndex = -1
 
     for (let i = 0; i < mirrors.length; i++) {
       if (i === skipIndex) continue
-      const hit = rayIntersectSegment(current, angle, mirrors[i].a, mirrors[i].b)
+      const hit = rayIntersectSegment(current, angle, mirrors[i])
       if (hit && hit.t < bestT) {
         bestT = hit.t
         bestPoint = hit.point
@@ -137,7 +158,7 @@ export function castHingeRay(
       }
     }
     for (const seg of boundary) {
-      const hit = rayIntersectSegment(current, angle, seg.a, seg.b)
+      const hit = rayIntersectSegment(current, angle, seg)
       if (hit && hit.t < bestT) {
         bestT = hit.t
         bestPoint = hit.point
@@ -151,7 +172,7 @@ export function castHingeRay(
     if (isPointOnSquareBoundary(bestPoint) || nearAnyVertex(bestPoint, vertices, vertexEps)) break
 
     const mirror = mirrors[bestMirrorIndex]
-    angle = reflectAngle(angle, Math.atan2(mirror.b.y - mirror.a.y, mirror.b.x - mirror.a.x))
+    angle = reflectAngle(angle, Math.atan2(mirror.ey, mirror.ex))
     current = bestPoint
     skipIndex = bestMirrorIndex
   }

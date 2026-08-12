@@ -135,14 +135,6 @@ def resolve_leaf_constraint(mode: SymmetryMode, constraint: LeafConstraint) -> R
     return _resolve_symmetry_boundary(mode, constraint)
 
 
-def is_fully_fixed_by_symmetry_boundary(mode: SymmetryMode, constraint: LeafConstraint) -> bool:
-    """Whether the leaf is already fully fixed by symmetry+boundary alone,
-    ignoring any existing lock — used to decide whether locking it would
-    freeze any actual remaining freedom."""
-    res = _resolve_symmetry_boundary(mode, constraint)
-    return res.feasible and res.point is not None
-
-
 class ResolvedPointEntry(NamedTuple):
     leaf_id: str
     point: Point

@@ -138,7 +138,14 @@ export function TreeEditorCanvas() {
       {nodes.map((node) => {
         const isLeaf = !node.parentId ? false : node.children.length === 0
         const isActiveParent = node.id === activeParentId
-        const isEdgeSelected = node.id === selectedEdgeId
+        // A river selection (an internal node, selected either here or via
+        // the Packing Editor's `selectRiver`) shares the same
+        // `selectedEdgeId` field as a real leaf-edge selection -- only the
+        // tree-edge LINE should highlight for a river; ringing the node
+        // circle too would draw attention to a node that isn't itself the
+        // thing the user selected (a river is the edge/band, not the
+        // internal junction point).
+        const isEdgeSelected = node.id === selectedEdgeId && isLeaf
         return (
           <circle
             key={node.id}

@@ -401,8 +401,6 @@ export function mergeCollinearIndirectPaths(vertices: Record<string, TilingVerte
   }
 }
 
-const NEAR_LINE_EPS = 2e-3
-
 /** Where `p` falls relative to segment `a`-`c`: `t` is its parametric
  * position (0 at `a`, 1 at `c`; outside `[0,1]` means beyond an endpoint),
  * `perpDist` its perpendicular distance from the infinite line through
@@ -419,20 +417,24 @@ function pointToSegmentInfo(p: Point, a: Point, c: Point): { t: number; perpDist
 }
 
 /** Finds every direct leg with one or more *other* vertices sitting on (or
- * within `NEAR_LINE_EPS` of) its segment, strictly between its two
- * endpoints -- common around the border, where the hull ring (see
- * `convexHullRing`) correctly excludes a flap collinear with two others as
- * not a true hull vertex, so the hull chain connects straight past it
- * (A-C) instead of stopping at it (A-B, B-C). Replaces each such leg with
- * a chain through every found vertex in order along the segment (handling
- * more than one), reusing the original leg's exact angle for every link
- * (still collinear by construction, so no re-derivation/re-snapping).
- * Mutates `vertices` positions untouched, only `legs`; no rank check --
- * splitting a leg through a vertex already sitting on it formalizes an
- * existing geometric fact rather than introducing a new one, so this is
- * expected to always be consistent (and `solveMinPerturbation` degrades
- * gracefully via least-squares even if a pathological input disagrees). */
-export function splitDirectLegsThroughNearbyVertices(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>): void {
+ * within `eps` of) its segment, strictly between its two endpoints --
+ * common around the border, where the hull ring (see `convexHullRing`)
+ * correctly excludes a flap collinear with two others as not a true hull
+ * vertex, so the hull chain connects straight past it (A-C) instead of
+ * stopping at it (A-B, B-C). Replaces each such leg with a chain through
+ * every found vertex in order along the segment (handling more than one),
+ * reusing the original leg's exact angle for every link (still collinear
+ * by construction, so no re-derivation/re-snapping). Mutates `vertices`
+ * positions untouched, only `legs`; no rank check -- splitting a leg
+ * through a vertex already sitting on it formalizes an existing geometric
+ * fact rather than introducing a new one, so this is expected to always be
+ * consistent (and `solveMinPerturbation` degrades gracefully via
+ * least-squares even if a pathological input disagrees). */
+export function splitDirectLegsThroughNearbyVertices(
+  vertices: Record<string, TilingVertex>,
+  legs: Record<string, TilingLeg>,
+  eps: number,
+): void {
   for (const leg of Object.values(legs)) {
     if (leg.kind !== 'direct') continue
     const a = vertices[leg.vertexA]
@@ -441,7 +443,7 @@ export function splitDirectLegsThroughNearbyVertices(vertices: Record<string, Ti
     const between = Object.values(vertices)
       .filter((v) => v.id !== leg.vertexA && v.id !== leg.vertexB)
       .map((v) => ({ id: v.id, ...pointToSegmentInfo(v, a, c) }))
-      .filter((info) => info.t > 1e-6 && info.t < 1 - 1e-6 && info.perpDist < NEAR_LINE_EPS)
+      .filter((info) => info.t > 1e-6 && info.t < 1 - 1e-6 && info.perpDist < eps)
       .sort((x, y) => x.t - y.t)
     if (between.length === 0) continue
 
@@ -595,7 +597,7 @@ export async function seedTilingGraph(
   // a merged direct leg can itself need splitting, but not vice versa.
   if (bins) {
     mergeCollinearIndirectPaths(vertices, legs, bins)
-    splitDirectLegsThroughNearbyVertices(vertices, legs)
+    splitDirectLegsThroughNearbyVertices(vertices, legs, hyperparams.tilingMinFeatureSize)
   }
 
   const stagingGraph: TilingGraphState = {
@@ -631,7 +633,7 @@ export function previewPathCandidates(
   const pa = graph.vertices[vertexAId]
   const pb = graph.vertices[vertexBId]
   if (!pa || !pb || vertexAId === vertexBId) return { error: 'Pick two distinct vertices.' }
-  const options = computePathOptions(pa, pb, bins)
+  const options = computePathOptions(pa, pb, bins, hyperparams.tilingPathOfferToleranceDeg)
   if (options.length === 0) return { error: 'No path is offered between these two vertices.' }
   return { candidates: { vertexAId, vertexBId, options } }
 }
@@ -938,10 +940,11 @@ function mergeVertexInto(
 
 /** The first leg with some *other* vertex (not its own two endpoints)
  * landing within `eps` of its segment, strictly between the endpoints --
- * generalizes `splitDirectLegsThroughNearbyVertices` (seed-time-only, direct
- * legs only, its own tiny fixed `NEAR_LINE_EPS`) to run continuously on any
- * leg kind at the caller's configurable `eps`, kept as a separate function
- * so the already-validated seed-time behavior stays untouched. Replaces
+ * generalizes `splitDirectLegsThroughNearbyVertices` (seed-time-only,
+ * direct legs only) to run continuously on any leg kind, kept as a
+ * separate function so the already-validated seed-time behavior stays
+ * structurally untouched even though both now read the same
+ * `hyperparams.tilingMinFeatureSize` tolerance. Replaces
  * that one leg with two new legs through the found vertex, both keeping the
  * original `angle` (still collinear by construction, no re-derivation) and
  * `kind` (a plain label with no control-flow significance anywhere in this
@@ -1237,11 +1240,23 @@ export function projectVertexDrag(
   const delta = fullDeltaFromCoefficients(vertexIds, graph.nullSpaceBasis, coeffs)
   const t = computeMaxBoundedScale(graph.vertices, delta)
 
+  // Omitting an entry for a vertex whose actual displacement this frame
+  // rounds to zero (most of a large graph, on any given drag -- only the
+  // dragged vertex's own null-space neighborhood typically has a nonzero
+  // component) lets the caller (`store.ts`'s `dragTilingVertexTo`) skip
+  // reallocating that vertex's object every single pointermove frame,
+  // preserving its reference identity across frames it didn't move in --
+  // purely a GC/downstream-memoization win, never a numeric behavior
+  // change, since a below-epsilon displacement wouldn't have been visibly
+  // different anyway.
   const out: Record<string, { x: number; y: number }> = {}
   for (const id of vertexIds) {
     const v = graph.vertices[id]
     const d = delta[id] ?? { dx: 0, dy: 0 }
-    out[id] = { x: v.x + t * d.dx, y: v.y + t * d.dy }
+    const dx = t * d.dx
+    const dy = t * d.dy
+    if (Math.abs(dx) < 1e-12 && Math.abs(dy) < 1e-12) continue
+    out[id] = { x: v.x + dx, y: v.y + dy }
   }
   return out
 }

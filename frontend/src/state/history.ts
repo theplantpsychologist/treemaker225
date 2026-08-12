@@ -10,9 +10,7 @@ export interface HistorySnapshot {
   hyperparams: HyperparamsState
   packing: PackingState | null
   lastSolvedScale: number | null
-  /** Unlike the old automated solvers' one-shot `tilingResult`/
-   * `pathNetworkResult` (display artifacts, never part of this snapshot),
-   * the manual tiling graph *is* real hand-edited state -- seeding it,
+  /** The manual tiling graph is real hand-edited state -- seeding it,
    * adding/deleting a leg, and dragging a vertex are all real edits the
    * user expects to undo/redo, same as a tree or constraint edit. */
   tilingGraph: TilingGraphState | null

@@ -51,7 +51,7 @@ def solve_tiling_request(req: TilingRequest) -> TilingResponse:
     if candidates is None:
         return TilingResponse(status="ok", message="tiling solve requires a shape with discrete face directions")
 
-    result = solve_tiling(leaf_ids, positions, req.constraints, candidates)
+    result = solve_tiling(leaf_ids, positions, req.constraints, candidates, hp.tiling_strict_concavity)
 
     # Flap positions moved but tree lengths (hence radii/river widths) did
     # not -- internal (river) node positions need refitting to stay
