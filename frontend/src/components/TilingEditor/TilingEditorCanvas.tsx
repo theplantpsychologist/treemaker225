@@ -6,8 +6,17 @@ import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeFaces } from '../../geometry/planarFaces'
 import { computeHinges, computeStraightSkeleton } from '../../geometry/straightSkeleton'
 import { signatureOf } from '../../geometry/tilingCotangent'
-import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
+import { castHingeRay } from '../../geometry/hingeRayCast'
+import type { MirrorSegment } from '../../geometry/hingeRayCast'
+import type { Point } from '../../geometry/symmetry'
+import { DEFAULT_INITIAL_ZOOM_OUT_FACTOR, paddedInitialViewBox, useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import { VIEW_SIZE } from '../PackingEditor/usePackingEditorInteraction'
+import {
+  TILING_FLAP_VERTEX_RADIUS_PX,
+  TILING_INTERMEDIATE_VERTEX_RADIUS_PX,
+  TILING_SKELETON_LOCK_RING_RADIUS_PX,
+  TILING_SKELETON_VERTEX_RADIUS_PX,
+} from '../../constants/sizeTokens'
 import { useTilingEditorInteraction } from './useTilingEditorInteraction'
 import { TilingInspector } from './TilingInspector'
 import type { TilingGraphState } from '../../types/tilingGraph'
@@ -24,9 +33,25 @@ function toScreen(x: number, y: number): [number, number] {
   return [x * VIEW_SIZE, (1 - y) * VIEW_SIZE]
 }
 
+/** The physical paper's edge, in the same unit-square coordinates as every
+ * tiling vertex/skeleton position -- a hinge ray reaching one of these
+ * segments has run off the paper and stops there (see `castHingeRay`). */
+const UNIT_SQUARE_BOUNDARY: MirrorSegment[] = [
+  { a: { x: 0, y: 0 }, b: { x: 1, y: 0 } },
+  { a: { x: 1, y: 0 }, b: { x: 1, y: 1 } },
+  { a: { x: 1, y: 1 }, b: { x: 0, y: 1 } },
+  { a: { x: 0, y: 1 }, b: { x: 0, y: 0 } },
+]
+
 interface FlapInfo {
   key: string
   points: string
+  /** True once a tiling graph exists and this flap's vertex has fewer than
+   * 2 incident legs -- a flap needs at least 2 paths to be structurally
+   * meaningful (one path alone can't form a crease network around it), so
+   * this flags it in the Inspector-free-canvas the same way `.tiling-flap`
+   * itself flags selection elsewhere in this file. */
+  understaffed: boolean
 }
 
 interface RiverInfo {
@@ -57,7 +82,11 @@ function riverPositionsFromGraph(
   return out
 }
 
-const FREE_AXIS_TICK = 8
+/** Free-axis tick half-length, as a multiple of the vertex dot's own
+ * on-screen radius -- rather than a flat pixel constant, so the "+" reads
+ * consistently sized relative to the dot it passes through regardless of
+ * zoom level or which vertex kind (flap vs. intermediate) it's drawn on. */
+const FREE_AXIS_TICK_FACTOR = 1.8
 
 export function TilingEditorCanvas() {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -70,6 +99,8 @@ export function TilingEditorCanvas() {
   const extraRotation = extraRotationFor(shape, hexagonExtraRotation, squareExtraRotation, dodecagonExtraRotation)
   const constraints = useAppStore((s) => s.constraints)
   const clipToSquare = useAppStore((s) => s.clipToSquare)
+  const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
+  const tilingMinFeatureSize = useAppStore((s) => s.hyperparams.tilingMinFeatureSize)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
@@ -82,7 +113,7 @@ export function TilingEditorCanvas() {
   const selectTilingSkeletonVertex = useAppStore((s) => s.selectTilingSkeletonVertex)
   const selectTilingSkeletonRidge = useAppStore((s) => s.selectTilingSkeletonRidge)
   const pruneStaleTilingSkeletonLocks = useAppStore((s) => s.pruneStaleTilingSkeletonLocks)
-  const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
+  const pan = useViewBoxPanZoom(svgRef, paddedInitialViewBox(VIEW_SIZE, DEFAULT_INITIAL_ZOOM_OUT_FACTOR))
   const { beginVertexPointerDown, onLegPointerDown, onPointerMove, onPointerUp } = useTilingEditorInteraction(svgRef)
 
   useEffect(() => {
@@ -143,7 +174,21 @@ export function TilingEditorCanvas() {
         if (!childPos) continue
         const width = packing.scale * node.length
         const shapePoints = buildShapePoints(shape, childPos.x, childPos.y, width, constraints.symmetryMode, extraRotation)
-        flapList.push({ key: node.id, points: toPointsAttr(shapePoints, VIEW_SIZE) })
+        // A flap needs at least 2 legs (paths) incident to its vertex to be
+        // structurally meaningful -- undefined (no tiling graph yet, or this
+        // leaf's flap vertex isn't in it for some other reason) never counts
+        // as understaffed, only a real, too-low leg count does.
+        const flapVertex = tilingGraph
+          ? Object.values(tilingGraph.vertices).find((v) => v.kind === 'flap' && v.flapId === node.id)
+          : undefined
+        const legCount = flapVertex
+          ? Object.values(tilingGraph!.legs).filter((l) => l.vertexA === flapVertex.id || l.vertexB === flapVertex.id).length
+          : null
+        flapList.push({
+          key: node.id,
+          points: toPointsAttr(shapePoints, VIEW_SIZE),
+          understaffed: legCount !== null && legCount < 2,
+        })
       } else {
         const pathD = pathByNodeId.get(node.id)
         if (pathD == null) continue
@@ -183,7 +228,7 @@ export function TilingEditorCanvas() {
           const b = face.vertexIds[(i + 1) % n]
           return Object.values(tilingGraph.legs).find((l) => (l.vertexA === a && l.vertexB === b) || (l.vertexA === b && l.vertexB === a))?.id
         })
-        return { faceId: face.id, skeleton, hinges: computeHinges(skeleton.nodes, skeleton.edges), legIdByEdgeIndex }
+        return { faceId: face.id, skeleton, legIdByEdgeIndex }
       })
       .filter(
         (
@@ -191,11 +236,48 @@ export function TilingEditorCanvas() {
         ): s is {
           faceId: string
           skeleton: NonNullable<ReturnType<typeof computeStraightSkeleton>>
-          hinges: ReturnType<typeof computeHinges>
           legIdByEdgeIndex: (string | undefined)[]
         } => s !== null,
       )
   }, [faces, tilingGraph])
+
+  // Every hinge extended into a full reflected ray -- see
+  // `geometry/hingeRayCast.ts`'s module doc. Mirror candidates are global
+  // (every face's ridges, not just the hinge's own face) since a hinge's
+  // path can cross into a neighboring face's territory; recomputed every
+  // render alongside `skeletons` since both depend on live positions.
+  const hingeRays = useMemo(() => {
+    if (!tilingGraph) return []
+    const legMirrors: MirrorSegment[] = []
+    for (const leg of Object.values(tilingGraph.legs)) {
+      const a = tilingGraph.vertices[leg.vertexA]
+      const b = tilingGraph.vertices[leg.vertexB]
+      if (a && b) legMirrors.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
+    }
+    const ridgeMirrors: MirrorSegment[] = skeletons.flatMap(({ skeleton }) =>
+      skeleton.ridges.map((r) => ({ a: r.start, b: r.end })),
+    )
+    const mirrors = [...legMirrors, ...ridgeMirrors]
+    const vertexPoints: Point[] = [
+      ...Object.values(tilingGraph.vertices).map((v) => ({ x: v.x, y: v.y })),
+      ...skeletons.flatMap(({ skeleton }) => skeleton.nodes.map((n) => n.position)),
+    ]
+    return skeletons.flatMap(({ faceId, skeleton }) =>
+      computeHinges(skeleton.nodes, skeleton.edges)
+        .filter((h) => Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) >= 1e-7)
+        .map((h, i) => {
+          const initialAngle = Math.atan2(h.to.y - h.from.y, h.to.x - h.from.x)
+          // The hinge's own origin is always a "vertex" (this very skeleton
+          // node), and normal incidence on the first bounce always reflects
+          // straight back through it -- excluding it from the stopping set
+          // is what makes the ray actually continue past that trivial
+          // round trip instead of terminating on its own starting point.
+          const otherVertices = vertexPoints.filter((p) => Math.hypot(p.x - h.from.x, p.y - h.from.y) >= tilingMinFeatureSize)
+          const points = castHingeRay(h.from, initialAngle, mirrors, UNIT_SQUARE_BOUNDARY, otherVertices, tilingMinFeatureSize)
+          return { key: `${faceId}-${i}`, points }
+        }),
+    )
+  }, [skeletons, tilingGraph, tilingMinFeatureSize])
 
   // Nodes' `legIds` (via `legIdByEdgeIndex`) -- computed once per skeletons
   // recompute, reused by both the stale-lock-release effect below and the
@@ -254,12 +336,20 @@ export function TilingEditorCanvas() {
         <rect className="tiling-square" x={0} y={0} width={VIEW_SIZE} height={VIEW_SIZE} onPointerDown={onBackgroundPointerDown} />
 
         <g clipPath={clipToSquare ? 'url(#tiling-square-clip)' : undefined}>
-          {rivers.map((r) => (
-            <path key={`tiling-river-${r.key}`} className="tiling-river" fillRule="evenodd" d={r.pathD} />
-          ))}
-          {flaps.map((f) => (
-            <polygon key={`tiling-flap-${f.key}`} className="tiling-flap" points={f.points} />
-          ))}
+          {showTilingFlapsAndRivers && (
+            <>
+              {rivers.map((r) => (
+                <path key={`tiling-river-${r.key}`} className="tiling-river" fillRule="evenodd" d={r.pathD} />
+              ))}
+              {flaps.map((f) => (
+                <polygon
+                  key={`tiling-flap-${f.key}`}
+                  className={`tiling-flap${f.understaffed ? ' understaffed' : ''}`}
+                  points={f.points}
+                />
+              ))}
+            </>
+          )}
 
           {skeletonNodesWithLegIds.flatMap(({ faceId, skeleton, nodes }) =>
             skeleton.ridges.map((r, i) => {
@@ -298,13 +388,13 @@ export function TilingEditorCanvas() {
               return <line key={`tiling-ridge-${faceId}-${i}`} className={className} x1={x1} y1={y1} x2={x2} y2={y2} />
             }),
           )}
-          {skeletons.flatMap(({ faceId, hinges }) =>
-            hinges.map((h, i) => {
-              const [x1, y1] = toScreen(h.from.x, h.from.y)
-              const [x2, y2] = toScreen(h.to.x, h.to.y)
-              return <line key={`tiling-hinge-${faceId}-${i}`} className="tiling-hinge" x1={x1} y1={y1} x2={x2} y2={y2} />
-            }),
-          )}
+          {hingeRays.map(({ key, points }) => (
+            <polyline
+              key={`tiling-hinge-${key}`}
+              className="tiling-hinge"
+              points={points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')}
+            />
+          ))}
         </g>
 
         {tilingGraph &&
@@ -363,17 +453,19 @@ export function TilingEditorCanvas() {
             const [x, y] = toScreen(v.x, v.y)
             const selected = tilingSelectedVertexIds.includes(v.id)
             const free = tilingGraph.freeAxes[v.id]
+            const dotRadiusPx = v.kind === 'flap' ? TILING_FLAP_VERTEX_RADIUS_PX : TILING_INTERMEDIATE_VERTEX_RADIUS_PX
+            const tick = dotRadiusPx * FREE_AXIS_TICK_FACTOR * pan.pxToWorld
             return (
               <g key={`tiling-vertex-${v.id}`}>
                 <circle
                   className={`tiling-vertex-dot ${v.kind}${selected ? ' armed' : ''}`}
                   cx={x}
                   cy={y}
-                  r={v.kind === 'flap' ? 5 : 3}
+                  r={dotRadiusPx * pan.pxToWorld}
                   onPointerDown={(e) => beginVertexPointerDown(v.id, e)}
                 />
-                {free?.x && <line className="tiling-free-axis-mark" x1={x - FREE_AXIS_TICK} y1={y} x2={x + FREE_AXIS_TICK} y2={y} />}
-                {free?.y && <line className="tiling-free-axis-mark" x1={x} y1={y - FREE_AXIS_TICK} x2={x} y2={y + FREE_AXIS_TICK} />}
+                {free?.x && <line className="tiling-free-axis-mark" x1={x - tick} y1={y} x2={x + tick} y2={y} />}
+                {free?.y && <line className="tiling-free-axis-mark" x1={x} y1={y - tick} x2={x} y2={y + tick} />}
               </g>
             )
           })}
@@ -387,12 +479,19 @@ export function TilingEditorCanvas() {
               const [x, y] = toScreen(node.position.x, node.position.y)
               return (
                 <g key={`tiling-skeleton-vertex-${faceId}-${i}`}>
-                  {locked && <circle className="tiling-skeleton-lock-ring" cx={x} cy={y} r={7} />}
+                  {locked && (
+                    <circle
+                      className="tiling-skeleton-lock-ring"
+                      cx={x}
+                      cy={y}
+                      r={TILING_SKELETON_LOCK_RING_RADIUS_PX * pan.pxToWorld}
+                    />
+                  )}
                   <circle
                     className={`tiling-skeleton-vertex-dot${selected ? ' armed' : ''}`}
                     cx={x}
                     cy={y}
-                    r={4}
+                    r={TILING_SKELETON_VERTEX_RADIUS_PX * pan.pxToWorld}
                     onPointerDown={(e) => {
                       e.stopPropagation()
                       selectTilingSkeletonVertex(legIds)

@@ -20,13 +20,6 @@
   margin: 0;
 }
 
-.shape-selector {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: auto;
-}
-
 .backend-status {
   font-size: 0.75rem;
   color: #9ca3af;
@@ -51,7 +44,19 @@
   flex-direction: column;
   min-width: 0;
   position: relative;
-  z-index: 1;
+  /* Overflowing toolbar content (e.g. a squeezed packing toolbar) must
+     never visually bleed into a neighboring pane -- clip it here rather
+     than relying on z-order alone. */
+  overflow: hidden;
+  transition: flex-grow 220ms ease, flex-basis 220ms ease;
+}
+
+/* Explicit per-pane z-index (right-to-left in DOM order, App.tsx's
+   `PANE_ORDER`) guarantees a later/rightward pane always paints over an
+   earlier one, even if something unexpected escapes a pane's own clipping. */
+
+.app-main.dragging .pane {
+  transition: none;
 }
 
 .pane-divider {
@@ -60,12 +65,73 @@
   background: var(--border);
   touch-action: none;
   position: relative;
-  z-index: 2;
+  z-index: 10;
 }
 
 .pane-divider:hover,
 .pane-divider:active {
   background: #9ca3af;
+}
+
+.pane-divider.static {
+  cursor: default;
+}
+
+.pane-collapsed {
+  cursor: pointer;
+  background: var(--panel-bg);
+}
+
+.pane-collapsed-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0.75rem 0;
+  color: #6b7280;
+}
+
+.pane-collapsed-tab:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.pane-collapsed-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.pane-close-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.pane-close-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.pane-bottom-action {
+  position: absolute;
+  left: 50%;
+  /* Tall enough to clear the tiling pane's `.tiling-dof-readout` text,
+     which sits at a fixed 0.5rem from the bottom underneath this button. */
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 2;
 }
 
 .pane-header {

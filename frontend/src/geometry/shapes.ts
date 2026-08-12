@@ -2,6 +2,11 @@ import type { SymmetryMode } from '../types/constraints'
 
 export type ShapeKind = 'circle' | 'square' | 'hexagon' | 'octagon' | 'dodecagon'
 
+/** Shapes whose boundary the manual tiling editor knows how to snap hull
+ * anchors onto -- gates the "Seed tiling" action (see `SeedTilingButton.tsx`
+ * and `TilingToolbar.tsx`). */
+export const SNAPPABLE_SHAPES = new Set<ShapeKind>(['hexagon', 'octagon', 'dodecagon'])
+
 function regularNgonBases(n: number, angleOffset = 0): [number, number][] {
   const bases: [number, number][] = []
   for (let k = 0; k < n; k++) {

@@ -1,11 +1,12 @@
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from './constraints'
 import type { HyperparamsState } from './hyperparams'
 import type { PackingState, SolveDiagnostics } from './solve'
+import type { TilingGraphState } from './tilingGraph'
 import type { TreeState } from './tree'
 import { backfillMissingPositions } from '../geometry/naiveInit'
 
 export interface SavedSession {
-  version: 5
+  version: 6
   tree: TreeState
   constraints: ConstraintsState
   hyperparams: HyperparamsState
@@ -13,6 +14,35 @@ export interface SavedSession {
   /** Frontend-only display setting (never sent to the backend); optional so
    * session files exported before this field existed still import cleanly. */
   clipToSquare?: boolean
+  /** The manual tiling editor's own graph, saved verbatim (see
+   * `state/store.ts`'s `exportSession`) -- null for sessions that never
+   * seeded a tiling, or ones exported before this field existed (see
+   * `migrateSessionV5toV6`). The importer (`importSession`) is responsible
+   * for cross-checking it against the imported `tree` before trusting it;
+   * this type only describes the wire shape. */
+  tilingGraph: TilingGraphState | null
+}
+
+/** The pre-tiling-persistence session shape — kept only for migration. */
+interface SavedSessionV5 {
+  version: 5
+  tree: TreeState
+  constraints: ConstraintsState
+  hyperparams: HyperparamsState
+  packing: PackingState | null
+  clipToSquare?: boolean
+}
+
+function migrateSessionV5toV6(v5: SavedSessionV5): SavedSession {
+  return {
+    version: 6,
+    tree: v5.tree,
+    constraints: v5.constraints,
+    hyperparams: v5.hyperparams,
+    packing: v5.packing,
+    clipToSquare: v5.clipToSquare,
+    tilingGraph: null,
+  }
 }
 
 /** The constraints shape used by session files exported before the
@@ -32,7 +62,7 @@ interface SavedSessionV4 {
   clipToSquare?: boolean
 }
 
-function migrateSessionV4toV5(v4: SavedSessionV4): SavedSession {
+function migrateSessionV4toV5(v4: SavedSessionV4): SavedSessionV5 {
   return {
     version: 5,
     tree: v4.tree,
@@ -176,10 +206,14 @@ export function parseSavedSession(data: unknown): SavedSession | null {
   const d = data as Record<string, unknown>
   if (!looksLikeSession(d)) return null
   if (d.version === 1)
-    return migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1))))
-  if (d.version === 2) return migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(d as unknown as SavedSessionV2)))
-  if (d.version === 3) return migrateSessionV4toV5(migrateSessionV3toV4(d as unknown as SavedSessionV3))
-  if (d.version === 4) return migrateSessionV4toV5(d as unknown as SavedSessionV4)
-  if (d.version === 5) return d as unknown as SavedSession
+    return migrateSessionV5toV6(
+      migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(migrateSessionV1toV2(d as unknown as SavedSessionV1)))),
+    )
+  if (d.version === 2)
+    return migrateSessionV5toV6(migrateSessionV4toV5(migrateSessionV3toV4(migrateSessionV2toV3(d as unknown as SavedSessionV2))))
+  if (d.version === 3) return migrateSessionV5toV6(migrateSessionV4toV5(migrateSessionV3toV4(d as unknown as SavedSessionV3)))
+  if (d.version === 4) return migrateSessionV5toV6(migrateSessionV4toV5(d as unknown as SavedSessionV4))
+  if (d.version === 5) return migrateSessionV5toV6(d as unknown as SavedSessionV5)
+  if (d.version === 6) return d as unknown as SavedSession
   return null
 }

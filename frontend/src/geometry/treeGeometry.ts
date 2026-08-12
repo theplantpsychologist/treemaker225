@@ -36,6 +36,14 @@ export function getLeaves(tree: TreeState): string[] {
     .map((n) => n.id)
 }
 
+/** Leaf count excluding the root, even in the degenerate case where the
+ * root itself is childless (and so shows up in `getLeaves`) -- used by UI
+ * gates like "can this tree be packed" that care about real flaps, not the
+ * bookkeeping root. */
+export function countNonRootLeaves(tree: TreeState): number {
+  return getLeaves(tree).filter((id) => id !== tree.rootId).length
+}
+
 /** Whenever the root ends up with exactly one child that itself branches
  * further (has at least one child of its own), the root is topologically a
  * leaf of the underlying unrooted tree -- but every algorithm keyed off

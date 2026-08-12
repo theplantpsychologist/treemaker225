@@ -30,18 +30,30 @@
 
 .tiling-flap {
   fill: var(--flap-color);
-  fill-opacity: 0.15;
+  fill-opacity: 0.1;
   stroke: var(--flap-color);
   stroke-width: var(--sw-thin);
+  stroke-opacity:0.5;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
 
+/* A flap whose vertex has fewer than 2 incident legs -- not enough paths to
+   be structurally meaningful yet. Always red, like `--color-delete`
+   elsewhere in the app, regardless of the active shape theme. */
+.tiling-flap.understaffed {
+  fill: var(--color-delete);
+  fill-opacity: 0.3;
+  stroke: var(--color-delete);
+  stroke-opacity: 0.9;
+}
+
 .tiling-river {
   fill: var(--river-color);
-  fill-opacity: 0.15;
+  fill-opacity: 0.1;
   stroke: var(--river-color);
   stroke-width: var(--sw-hairline);
+  stroke-opacity:0.5;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
@@ -63,6 +75,7 @@
 /* A perpendicular from a straight-skeleton node to one of its tangent
    sides -- faded/neutral, purely diagnostic. */
 .tiling-hinge {
+  fill: none;
   stroke: #9ca3af;
   stroke-opacity: 0.6;
   stroke-width: var(--sw-hairline);
@@ -113,7 +126,7 @@
    fully-constrained vertex. */
 .tiling-free-axis-mark {
   stroke: #dc2626;
-  stroke-width: 2;
+  stroke-width: 4;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
@@ -153,7 +166,7 @@
    distinct color so it doesn't read as a graph vertex. A ring around a
    locked one shows its cotangent-incircle constraint is active. */
 .tiling-skeleton-vertex-dot {
-  fill: #059669;
+  fill: transparent;
   cursor: pointer;
 }
 
@@ -163,8 +176,8 @@
 
 .tiling-skeleton-lock-ring {
   fill: none;
-  stroke: #059669;
-  stroke-width: var(--sw-thin);
+  stroke: var(--accent);
+  stroke-width: 2pt;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }

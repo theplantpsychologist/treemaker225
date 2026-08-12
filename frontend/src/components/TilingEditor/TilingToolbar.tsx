@@ -1,29 +1,39 @@
 import { useAppStore } from '../../state/store'
 import './TilingToolbar.css'
 
-const SNAPPABLE_SHAPES = new Set(['hexagon', 'octagon', 'dodecagon'])
-
+/** Toggle + hint/error strip for the tiling pane -- the "Seed tiling" action
+ * itself now lives in the packing pane (`SeedTilingButton.tsx`), one step
+ * earlier in the workflow. The show/hide toggle stays available as soon as
+ * there's a packing to draw flaps/rivers from (even before a tiling graph
+ * exists); the rest renders nothing once there's neither a graph to hint
+ * about nor an error to show. */
 export function TilingToolbar() {
-  const tree = useAppStore((s) => s.tree)
   const packing = useAppStore((s) => s.packing)
-  const shape = useAppStore((s) => s.hyperparams.shape)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
-  const tilingSeeding = useAppStore((s) => s.tilingSeeding)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
   const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
   const tilingError = useAppStore((s) => s.tilingError)
-  const seedTilingGraph = useAppStore((s) => s.seedTilingGraph)
   const clearTilingError = useAppStore((s) => s.clearTilingError)
+  const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
+  const setShowTilingFlapsAndRivers = useAppStore((s) => s.setShowTilingFlapsAndRivers)
 
-  const canSeed = Boolean(packing) && Boolean(tree.rootId) && SNAPPABLE_SHAPES.has(shape) && !tilingSeeding
+  if (!packing && !tilingError) return null
 
   return (
     <div className="tiling-toolbar">
       <div className="tiling-toolbar-row">
-        <button className="reinitialize-button" onClick={() => void seedTilingGraph()} disabled={!canSeed}>
-          {tilingSeeding ? 'Seeding…' : tilingGraph ? 'Re-seed tiling' : 'Seed tiling'}
-        </button>
+        <label className="tiling-switch">
+          <input
+            type="checkbox"
+            checked={showTilingFlapsAndRivers}
+            onChange={(e) => setShowTilingFlapsAndRivers(e.target.checked)}
+          />
+          <span className="tiling-switch-track">
+            <span className="tiling-switch-thumb" />
+          </span>
+          show flaps &amp; rivers
+        </label>
       </div>
       {tilingGraph && (
         <div className="tiling-toolbar-hint">

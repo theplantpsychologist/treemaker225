@@ -13,9 +13,26 @@ export interface WorldPoint {
   y: number
 }
 
+/** A square viewBox of `size x size` content, padded on all sides so the
+ * content starts out smaller on screen (more zoomed out) than a 1:1
+ * `{0, 0, size, size}` viewBox would show -- used as the *initial* viewBox
+ * for canvases (packing, tiling) whose content already fills exactly
+ * `size` world units, so the content stays centered rather than shifting
+ * toward the origin corner. `factor > 1` zooms out; `1` is unpadded. */
+export function paddedInitialViewBox(size: number, factor: number): ViewBox {
+  const padded = size * factor
+  const margin = (padded - size) / 2
+  return { x: -margin, y: -margin, w: padded, h: padded }
+}
+
 const PAN_CLICK_THRESHOLD = 4
 const ZOOM_MIN_FACTOR = 0.2
 const ZOOM_MAX_FACTOR = 5
+
+/** Default padding factor for `paddedInitialViewBox` -- shared by the
+ * packing and tiling canvases so their initial zoom level (a bit more
+ * zoomed out than a tight 1:1 fit) stays in sync. */
+export const DEFAULT_INITIAL_ZOOM_OUT_FACTOR = 1.3
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v))

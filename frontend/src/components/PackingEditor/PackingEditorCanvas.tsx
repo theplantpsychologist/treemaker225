@@ -13,7 +13,7 @@ import type { CornerId, EdgeSide } from '../../types/constraints'
 import { Inspector } from './Inspector'
 import { SolvingOverlay } from './SolvingOverlay'
 import { usePackingEditorInteraction, VIEW_SIZE } from './usePackingEditorInteraction'
-import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
+import { DEFAULT_INITIAL_ZOOM_OUT_FACTOR, paddedInitialViewBox, useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import {
   CENTER_DOT_RADIUS_PX,
   CORNER_PIN_HANDLE_SIZE_PX,
@@ -86,7 +86,7 @@ export function PackingEditorCanvas() {
   const pinToCorner = useAppStore((s) => s.pinToCorner)
   const equalSourceId = useAppStore((s) => s.equalSourceId)
   const cancelEqual = useAppStore((s) => s.cancelEqual)
-  const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
+  const pan = useViewBoxPanZoom(svgRef, paddedInitialViewBox(VIEW_SIZE, DEFAULT_INITIAL_ZOOM_OUT_FACTOR))
   const unitsPerPixel = pan.pxToWorld / VIEW_SIZE
   const { beginFlapPointerDown, selectRiver, onPointerMove, onPointerUp } =
     usePackingEditorInteraction(svgRef, unitsPerPixel)

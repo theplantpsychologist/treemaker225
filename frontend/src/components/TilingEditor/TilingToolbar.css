@@ -17,3 +17,53 @@
   color: var(--text-muted, #6b7280);
   font-size: 0.75rem;
 }
+
+.tiling-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tiling-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tiling-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: #d1d5db;
+  transition: background 150ms ease;
+}
+
+.tiling-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 150ms ease;
+}
+
+.tiling-switch input:checked + .tiling-switch-track {
+  background: var(--accent);
+}
+
+.tiling-switch input:checked + .tiling-switch-track .tiling-switch-thumb {
+  transform: translateX(14px);
+}
+
+.tiling-switch input:focus-visible + .tiling-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

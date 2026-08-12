@@ -478,8 +478,19 @@ export function computeHinges(nodes: SkeletonNode[], edges: OriginalEdge[]): Hin
       const aby = e.b.y - e.a.y
       const lenSq = abx * abx + aby * aby
       if (lenSq < EPS_LENGTH * EPS_LENGTH) continue
-      let tParam = ((node.position.x - e.a.x) * abx + (node.position.y - e.a.y) * aby) / lenSq
-      tParam = Math.max(0, Math.min(1, tParam))
+      // Deliberately NOT clamped to [0, 1]: in a concave polygon, a node's
+      // incircle can be tangent to an edge's infinite LINE at a point that
+      // falls outside that edge's actual finite segment (the edge is too
+      // short, or off-center, to reach the true tangent point) -- the
+      // node's tangency to that edge is still real, just via its
+      // extension. `to` here exists only to give a hinge its direction
+      // (see `castHingeRay`'s caller, which derives an angle from `to -
+      // from` and otherwise ignores `to`'s position), and that direction
+      // must stay exactly perpendicular to the edge regardless of where
+      // the foot lands -- clamping would instead point toward the nearest
+      // endpoint, an arbitrary (non-perpendicular, non-45-degree-multiple)
+      // direction with no relation to the tangency this hinge represents.
+      const tParam = ((node.position.x - e.a.x) * abx + (node.position.y - e.a.y) * aby) / lenSq
       hinges.push({ from: node.position, to: { x: e.a.x + tParam * abx, y: e.a.y + tParam * aby }, edgeIndex })
     }
   }

@@ -69,6 +69,34 @@ import { downloadJson } from '../utils/download'
 import type { HistorySnapshot } from './history'
 import { HISTORY_LIMIT, snapshot } from './history'
 
+export type PaneId = 'tree' | 'packing' | 'tiling' | 'output'
+
+/** A blank tree (fresh page load or "Start over") shows only the tree
+ * editor -- the rest of the workflow's panes open themselves as the user
+ * reaches them (see `initializePacking`/`seedTilingGraph`). */
+const DEFAULT_PANE_OPEN: Record<PaneId, boolean> = { tree: true, packing: false, tiling: false, output: false }
+
+/** A saved tiling graph is only trustworthy against the tree it was
+ * exported alongside -- a hand-edited session file (or one whose tree got
+ * edited independently of its tiling section) could reference a flap id
+ * that no longer exists, or no longer names a leaf. Rather than attempt a
+ * partial repair (which risks silently rendering a graph that no longer
+ * matches the tree it's drawn against), any mismatch discards the whole
+ * tiling graph -- the same "no repair, hard drop" convention used
+ * elsewhere for corrupted/degenerate input (e.g. `computeStraightSkeleton`
+ * returning `null`). */
+function isTilingGraphConsistentWithTree(tilingGraph: TilingGraphState, tree: TreeState): boolean {
+  for (const vertex of Object.values(tilingGraph.vertices)) {
+    if (vertex.kind !== 'flap') continue
+    const node = vertex.flapId ? tree.nodes[vertex.flapId] : undefined
+    if (!node || node.children.length > 0) return false
+  }
+  for (const leg of Object.values(tilingGraph.legs)) {
+    if (!tilingGraph.vertices[leg.vertexA] || !tilingGraph.vertices[leg.vertexB]) return false
+  }
+  return true
+}
+
 interface AppState {
   tree: TreeState
   activeParentId: string | null
@@ -80,6 +108,11 @@ interface AppState {
   constraintError: string | null
   hyperparams: HyperparamsState
   clipToSquare: boolean
+  /** Tiling editor display toggle -- hides flap/river shapes so the crease
+   * lines and vertices they'd otherwise sit under are easier to see. Pure
+   * view state, like `paneOpen`: not part of undo/redo history and not
+   * saved with the session. */
+  showTilingFlapsAndRivers: boolean
   packing: PackingState | null
   lastSolvedScale: number | null
   solving: boolean
@@ -120,6 +153,17 @@ interface AppState {
    * flight -- separate from the packing-solve `solving` flag so seeding
    * doesn't grey out unrelated packing controls. */
   tilingSeeding: boolean
+
+  /** Which of the four main editor panes are expanded vs. collapsed to a
+   * strip -- pure UI/layout state, deliberately outside `HistorySnapshot`
+   * (undo/redo should never fight the user's window arrangement, same
+   * reasoning as `tilingSeeding`). A blank tree starts with only `tree`
+   * open; `initializePacking`/`seedTilingGraph` auto-open the next pane in
+   * the workflow (and `seedTilingGraph` also collapses `tree`), but the
+   * user's own explicit collapse/expand (via the X button or a strip's
+   * tab) always wins after that -- nothing here re-asserts a pane's
+   * openness on every render. */
+  paneOpen: Record<PaneId, boolean>
 
   pushUndoSnapshot: () => void
   undo: () => void
@@ -162,6 +206,7 @@ interface AppState {
 
   setHyperparams: (hyperparams: Partial<HyperparamsState>) => void
   setClipToSquare: (value: boolean) => void
+  setShowTilingFlapsAndRivers: (value: boolean) => void
   clearUiError: () => void
   runSolve: () => Promise<void>
   snapActivePaths: () => Promise<void>
@@ -192,6 +237,8 @@ interface AppState {
   dragTilingVertexTo: (vertexId: string, x: number, y: number) => void
   runTilingCleanup: () => void
 
+  setPaneOpen: (pane: PaneId, open: boolean) => void
+
   exportSession: () => void
   importSession: (data: unknown) => void
 }
@@ -207,6 +254,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   constraintError: null,
   hyperparams: DEFAULT_HYPERPARAMS,
   clipToSquare: true,
+  showTilingFlapsAndRivers: true,
   packing: null,
   lastSolvedScale: null,
   solving: false,
@@ -223,6 +271,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tilingSkeletonSelection: null,
   tilingError: null,
   tilingSeeding: false,
+  paneOpen: DEFAULT_PANE_OPEN,
 
   pushUndoSnapshot: () => {
     const state = get()
@@ -314,6 +363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingError: null,
       undoStack,
       redoStack: [],
+      paneOpen: DEFAULT_PANE_OPEN,
     })
   },
 
@@ -373,11 +423,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       packing: { ...naive, diagnostics: { kind: 'naive' } },
       constraints: DEFAULT_CONSTRAINTS,
       lastSolvedScale: null,
+      // Full tree-selection reset (same 6 fields undo/redo/startOver clear)
+      // so the packing Inspector -- which keys off selectedEdgeId/
+      // pairingSourceId/equalSourceId/pinTargetMode/constraintError --
+      // defaults to hidden in the newly-opened packing pane, instead of
+      // showing a stale selection carried over from the tree editor.
+      activeParentId: null,
+      selectedEdgeId: null,
       pairingSourceId: null,
       equalSourceId: null,
       pinTargetMode: null,
       constraintError: null,
       uiError: null,
+      paneOpen: { ...get().paneOpen, packing: true },
     })
   },
 
@@ -731,6 +789,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setClipToSquare: (value) => set({ clipToSquare: value }),
+  setShowTilingFlapsAndRivers: (value) => set({ showTilingFlapsAndRivers: value }),
   clearUiError: () => set({ uiError: null }),
 
   runSolve: async () => {
@@ -932,6 +991,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedLegId: null,
       tilingError: null,
       tilingSeeding: false,
+      // The workflow's next step lives in the tiling pane -- collapse the
+      // tree pane (its job is done) and reveal tiling, mirroring
+      // `initializePacking`'s auto-open of the packing pane.
+      paneOpen: { ...get().paneOpen, tree: false, tiling: true },
     })
   },
 
@@ -1190,15 +1253,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ tilingGraph: cleaned })
   },
 
+  setPaneOpen: (pane, open) => set((state) => ({ paneOpen: { ...state.paneOpen, [pane]: open } })),
+
   exportSession: () => {
     const state = get()
     const session: SavedSession = {
-      version: 5,
+      version: 6,
       tree: state.tree,
       constraints: state.constraints,
       hyperparams: state.hyperparams,
       packing: state.packing,
       clipToSquare: state.clipToSquare,
+      tilingGraph: state.tilingGraph,
     }
     downloadJson('treemaker-session.json', session)
   },
@@ -1219,6 +1285,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const packing = session.packing
       ? { ...session.packing, positions: backfillMissingPositions(tree, session.packing.positions) }
       : null
+    // Discard rather than repair a tiling graph that no longer matches the
+    // (possibly hand-edited, or re-canonicalized) tree it's paired with --
+    // see `isTilingGraphConsistentWithTree`'s doc.
+    const tilingGraph =
+      session.tilingGraph && isTilingGraphConsistentWithTree(session.tilingGraph, tree) ? session.tilingGraph : null
     get().pushUndoSnapshot()
     set({
       tree,
@@ -1233,6 +1304,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       pinTargetMode: null,
       constraintError: null,
       solveError: null,
+      tilingGraph,
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingSkeletonSelection: null,
+      tilingError: null,
+      paneOpen: { tree: true, packing: Boolean(packing), tiling: Boolean(tilingGraph), output: false },
     })
   },
 }))
