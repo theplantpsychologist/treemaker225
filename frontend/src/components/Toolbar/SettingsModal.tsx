@@ -189,6 +189,22 @@ export function SettingsModal() {
               )}
               </section>
               <section className="settings-section">
+              <h2>Tiling editor</h2>
+              <label
+                className="settings-field"
+                title="Minimum on-screen feature size (in unit-square units) -- below this, the manual tiling editor automatically snaps two near-coincident vertices together or splits a leg a vertex has drifted onto, after every drag"
+              >
+                minimum feature size
+                <input
+                  type="number"
+                  min={0}
+                  step={0.001}
+                  value={hyperparams.tilingMinFeatureSize}
+                  onChange={(e) => setHyperparams({ tilingMinFeatureSize: Number(e.target.value) })}
+                />
+              </label>
+              </section>
+              <section className="settings-section">
               <h2>Path network solver</h2>
               <label className="settings-field" title="Weight on the flap-displacement penalty -- larger values keep flaps closer to where they started">
                 displacement weight (C1)

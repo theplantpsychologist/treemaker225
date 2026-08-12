@@ -5,9 +5,12 @@ import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
 import type { HyperparamsState } from '../../types/hyperparams'
 import type { TreeState } from '../../types/tree'
 import { toTreeIn } from '../../types/tree'
-import type { FrozenHullPin, TilingGraphState, TilingLeg, TilingPathCandidates, TilingVertex } from '../../types/tilingGraph'
+import type { SkeletonLock, TilingGraphState, TilingLeg, TilingPathCandidates, TilingVertex } from '../../types/tilingGraph'
 import type { PathOption } from '../../geometry/tilingGraphOps'
 import type { Point } from '../../geometry/symmetry'
+import { cotangentRow, signatureOf, slidingQuadruplets } from '../../geometry/tilingCotangent'
+import { computeFaces, legIdByFaceEdge } from '../../geometry/planarFaces'
+import { computeStraightSkeleton } from '../../geometry/straightSkeleton'
 import { getLeaves } from '../../geometry/treeGeometry'
 import { extraRotationFor } from '../../geometry/shapes'
 import { buildBaseRows } from '../../geometry/tilingBaseRows'
@@ -82,19 +85,46 @@ function binsFor(hyperparams: HyperparamsState, constraints: ConstraintsState): 
   return getBinGeometry(hyperparams.shape, constraints.symmetryMode, extraRotation)
 }
 
-function frozenHullPinRow(pin: FrozenHullPin): Row {
-  if (pin.edge === 'left') return { coeffs: { [columnKey(pin.flapId, 'x')]: 1 }, b: 0 }
-  if (pin.edge === 'right') return { coeffs: { [columnKey(pin.flapId, 'x')]: 1 }, b: 1 }
-  if (pin.edge === 'bottom') return { coeffs: { [columnKey(pin.flapId, 'y')]: 1 }, b: 0 }
-  return { coeffs: { [columnKey(pin.flapId, 'y')]: 1 }, b: 1 }
-}
-
 function allBaseRows(graph: TilingGraphState, tree: TreeState): Row[] {
-  return [...buildBaseRows(getLeaves(tree), graph.constraints), ...graph.frozenHullPins.map(frozenHullPinRow)]
+  return buildBaseRows(getLeaves(tree), graph.constraints)
 }
 
 function legRows(graph: TilingGraphState): Row[] {
   return Object.values(graph.legs).map((leg) => legRow(leg.vertexA, leg.vertexB, leg.angle))
+}
+
+/** Rows for every active `SkeletonLock` -- a lock referencing a since-deleted
+ * leg contributes nothing (inert until `deleteTilingLeg` prunes it, or the
+ * live-geometry check in `TilingEditorCanvas.tsx` releases it). Each lock's
+ * `legIds` expand to `n - 3` overlapping quadruplet rows (see
+ * `slidingQuadruplets`), read fresh from `graph.legs` every time so a lock
+ * never carries its own stale copy of an angle/vertex. */
+function lockRows(graph: TilingGraphState): Row[] {
+  const rows: Row[] = []
+  for (const lock of graph.skeletonLocks) {
+    if (!lock.legIds.every((id) => graph.legs[id])) continue
+    const pairs = lock.legIds.map((legId, i) => ({ legId, entryVertexId: lock.entryVertexIds[i] }))
+    for (const quad of slidingQuadruplets(pairs)) {
+      const row = cotangentRow(
+        quad.map(({ legId, entryVertexId }) => {
+          const leg = graph.legs[legId]
+          return { vertexId: entryVertexId, angle: legAngleAtVertex(leg, entryVertexId) }
+        }),
+      )
+      if (row) rows.push(row)
+    }
+  }
+  return rows
+}
+
+/** The full active row set for a solve/rank-check: user constraints, hull
+ * pins, every leg's direction, and every locked incircle vertex's cotangent
+ * rows. Every graph-mutating operation below must assemble its own solve
+ * from this (not just `finalize`), since each one solves positions itself
+ * before `finalize` ever runs -- patching only `finalize` would let
+ * positions silently drift off a lock between edits. */
+function activeRows(graph: TilingGraphState, tree: TreeState): Row[] {
+  return [...allBaseRows(graph, tree), ...legRows(graph), ...lockRows(graph)]
 }
 
 function flattenPositions(vertexIds: string[], columns: ColumnIndex, vertices: Record<string, TilingVertex>): number[] {
@@ -299,7 +329,7 @@ function pullVerticesIntoBounds(graph: TilingGraphState): TilingGraphState {
 
 function finalize(graph: TilingGraphState, tree: TreeState): TilingGraphState {
   const vertexIds = Object.keys(graph.vertices)
-  const rows = [...allBaseRows(graph, tree), ...legRows(graph)]
+  const rows = activeRows(graph, tree)
   const withDerived = { ...graph, ...deriveFields(rows, vertexIds) }
   return pullVerticesIntoBounds(withDerived)
 }
@@ -464,14 +494,20 @@ export async function seedTilingGraph(
 
   const graphConstraints: ConstraintsState = { ...constraints, perLeaf: { ...constraints.perLeaf } }
   const legs: Record<string, TilingLeg> = {}
-  const frozenHullPins: FrozenHullPin[] = []
   let accepted = buildBaseRows(leafIds, graphConstraints)
   let columns = buildColumnIndex(Object.keys(vertices))
 
   const hullPoints = Object.values(vertices).map((v) => ({ id: v.id, x: v.x, y: v.y }))
   const hullRing = convexHullRing(hullPoints)
 
-  // Layer 1a: one anchor per occupied border.
+  // Layer 1a: one anchor per occupied border -- written directly into
+  // `graphConstraints.perLeaf[...].boundary` (the same field the Inspector's
+  // own edge-pin button reads/writes) rather than a separate always-on
+  // mechanism, so a seed-time anchor shows up as an active pin button and
+  // can be cleared/re-pinned from the Inspector like any other boundary
+  // constraint. Set directly (not via `withPinEdge`) to skip its
+  // symmetry-pair mirroring -- this is an internal rigid-body anchor for a
+  // single flap, not a user-declared pin the partner should mirror too.
   const anchors = pickBorderAnchors(hullRing, vertices)
   for (const flapId of Object.values(anchors)) {
     if (!flapId) continue
@@ -480,7 +516,8 @@ export async function seedTilingGraph(
     const row = nearestEdgeRow(flapId, vertices[flapId])
     if (tryAccept(accepted, [row], columns)) {
       accepted = [...accepted, row]
-      frozenHullPins.push({ flapId, edge: nearestEdge(vertices[flapId]) })
+      const edge = nearestEdge(vertices[flapId])
+      graphConstraints.perLeaf[flapId] = { ...(constraint ?? NO_LEAF_CONSTRAINT), boundary: { kind: 'pin_edge', edge } }
     }
   }
 
@@ -564,15 +601,15 @@ export async function seedTilingGraph(
   const stagingGraph: TilingGraphState = {
     vertices,
     legs,
-    frozenHullPins,
     constraints: graphConstraints,
+    skeletonLocks: [],
     dof: 0,
     freeAxes: {},
     nullSpaceBasis: [],
   }
   const vertexIds = Object.keys(vertices)
   const finalColumns = buildColumnIndex(vertexIds)
-  const finalRows = [...allBaseRows(stagingGraph, tree), ...legRows(stagingGraph)]
+  const finalRows = activeRows(stagingGraph, tree)
   const x0 = flattenPositions(vertexIds, finalColumns, vertices)
   const solved = solveMinPerturbation(finalRows, finalColumns, x0)
   const solvedVertices = applyPositions(vertices, unflattenPositions(vertexIds, finalColumns, solved))
@@ -621,7 +658,7 @@ export function addDirectLeg(
 
   const vertexIds = Object.keys(graph.vertices)
   const columns = buildColumnIndex(vertexIds)
-  const existingRows = [...allBaseRows(graph, tree), ...legRows(graph)]
+  const existingRows = activeRows(graph, tree)
   const newRow = legRow(vertexAId, vertexBId, angle)
   if (!tryAccept(existingRows, [newRow], columns)) {
     return { error: 'This path would overconstrain the tiling.' }
@@ -696,7 +733,7 @@ export function commitBentPath(
   const vertexIds = Object.keys(workingVertices)
   const columns = buildColumnIndex(vertexIds)
   const workingGraph: TilingGraphState = { ...graph, vertices: workingVertices }
-  const existingRows = [...allBaseRows(workingGraph, tree), ...legRows(workingGraph)]
+  const existingRows = activeRows(workingGraph, tree)
   const newRows = newLegs.map((leg) => legRow(leg.vertexA, leg.vertexB, leg.angle))
   if (!tryAccept(existingRows, newRows, columns)) {
     return { error: 'This path would overconstrain the tiling.' }
@@ -733,15 +770,16 @@ export function commitPathOption(
   return commitBentPath(graph, tree, hyperparams, vertexAId, vertexBId, option.configIndex)
 }
 
-/** Deleting a direct leg just drops its row. Deleting an indirect leg can
- * cascade: an `intermediate` vertex only ever has degree 0 or >=2, so if a
- * removal drops one down to degree 1, its one remaining leg (and then the
- * vertex itself) is removed too -- this single rule is exactly "a 2-legged
- * path loses a leg -> drop both the other leg and the vertex", and
- * correctly leaves a 3+-leg junction alone when it only drops to 2. */
-export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId: string): TilingGraphState {
-  const legs = { ...graph.legs }
-  const vertices = { ...graph.vertices }
+/** Deletes `legId` and cascades: an `intermediate` vertex only ever has
+ * degree 0 or >=2, so if a removal drops one down to degree 1, its one
+ * remaining leg (and then the vertex itself) is removed too -- this single
+ * rule is exactly "a 2-legged path loses a leg -> drop both the other leg
+ * and the vertex", and correctly leaves a 3+-leg junction alone when it
+ * only drops to 2. Mutates `vertices`/`legs` in place. Shared by
+ * `deleteTilingLeg` (the user-facing delete action) and the running
+ * cleanup below (`dedupeDirectionsAt`'s "discard the longer duplicate-
+ * direction leg" needs the identical cascade). */
+function cascadeDeleteLeg(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>, legId: string): void {
   const removed = new Set<string>()
   const queue = [legId]
 
@@ -761,11 +799,25 @@ export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId:
       else if (remaining.length === 1) queue.push(remaining[0].id)
     }
   }
+}
+
+/** Deleting a direct leg just drops its row; deleting an indirect leg can
+ * cascade -- see `cascadeDeleteLeg`'s doc. */
+export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId: string): TilingGraphState {
+  const legs = { ...graph.legs }
+  const vertices = { ...graph.vertices }
+  cascadeDeleteLeg(vertices, legs, legId)
+
+  // A lock referencing any leg removed above (directly, or via the
+  // intermediate-vertex cascade) is no longer geometrically meaningful --
+  // drop it now rather than leaving it inert for the live-geometry check in
+  // `TilingEditorCanvas.tsx` to eventually notice.
+  const skeletonLocks = graph.skeletonLocks.filter((lock) => lock.legIds.every((id) => legs[id]))
 
   const vertexIds = Object.keys(vertices)
   const columns = buildColumnIndex(vertexIds)
-  const nextGraph: TilingGraphState = { ...graph, vertices, legs }
-  const rows = [...allBaseRows(nextGraph, tree), ...legRows(nextGraph)]
+  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks }
+  const rows = activeRows(nextGraph, tree)
   const x0 = flattenPositions(vertexIds, columns, vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
   const finalVertices = applyPositions(vertices, unflattenPositions(vertexIds, columns, solved))
@@ -789,6 +841,192 @@ export function deleteTilingVertexAndLegs(graph: TilingGraphState, tree: TreeSta
   return current
 }
 
+function vertexDist(a: TilingVertex, b: TilingVertex): number {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+/** The first pair of vertices within `eps` of each other -- an all-pairs
+ * scan (vertex counts are small, matching this file's other simple
+ * non-indexed scans). Flap-flap pairs are skipped entirely: a flap is
+ * "created once at seed time and never removed by any tiling-editing
+ * operation" (see this module's top doc), so two flaps getting close is
+ * never a merge candidate, only ever a fact about the current drag. When
+ * one side is a flap it's always returned as `survivorId` (the flap is
+ * never removable); between two `intermediate` vertices either can be the
+ * survivor, so the choice is arbitrary but deterministic (whichever is
+ * found first in iteration order). */
+function findMergeCandidate(vertices: Record<string, TilingVertex>, eps: number): { survivorId: string; victimId: string } | null {
+  const list = Object.values(vertices)
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i]
+      const b = list[j]
+      if (a.kind === 'flap' && b.kind === 'flap') continue
+      if (vertexDist(a, b) >= eps) continue
+      if (a.kind === 'flap') return { survivorId: a.id, victimId: b.id }
+      if (b.kind === 'flap') return { survivorId: b.id, victimId: a.id }
+      return { survivorId: a.id, victimId: b.id }
+    }
+  }
+  return null
+}
+
+/** Removes any leg-direction collision at `vertexId` that a merge may have
+ * just introduced -- if two or more of its own legs (pre-existing plus
+ * whatever `mergeVertexInto` just transferred in) land in the same
+ * direction bin, keeps only the geometrically shortest (current Euclidean
+ * endpoint distance) and `cascadeDeleteLeg`s the rest, per the request's
+ * "only keep/transfer the shorter edge and discard the longer one." Loops
+ * since discarding one duplicate can't create another at this same vertex,
+ * but re-scans rather than assuming a single pass catches every bin. */
+function dedupeDirectionsAt(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>, vertexId: string, bins: BinGeometry): void {
+  let changed = true
+  while (changed) {
+    changed = false
+    const touching = Object.values(legs).filter((l) => l.vertexA === vertexId || l.vertexB === vertexId)
+    const byBin = new Map<number, TilingLeg[]>()
+    for (const leg of touching) {
+      const bin = binIndex(legAngleAtVertex(leg, vertexId), bins)
+      const list = byBin.get(bin) ?? []
+      list.push(leg)
+      byBin.set(bin, list)
+    }
+    for (const list of byBin.values()) {
+      if (list.length < 2) continue
+      const ranked = list
+        .map((leg) => ({ leg, length: vertexDist(vertices[leg.vertexA], vertices[leg.vertexB]) }))
+        .sort((x, y) => x.length - y.length)
+      for (const { leg } of ranked.slice(1)) cascadeDeleteLeg(vertices, legs, leg.id)
+      changed = true
+      break
+    }
+  }
+}
+
+/** Merges `victimId` (always `intermediate`) into `survivorId` (a flap or
+ * another `intermediate` vertex) -- the two are within the running
+ * cleanup's `eps` of each other by construction. Deletes the leg directly
+ * connecting them if one exists (the "an indirect leg approaches 0" case),
+ * then re-points every other leg touching `victimId` onto `survivorId`.
+ * `angle` is left untouched on every re-pointed leg -- matching this
+ * module's "a leg's angle is set once, never recomputed from position"
+ * invariant, and accurate here to within the same `eps` the merge trigger
+ * itself used. Replaces each re-pointed leg with a new object rather than
+ * mutating it in place, since `legs`'s entries are shared with whatever
+ * committed graph triggered this cleanup. Finishes by resolving any same-
+ * direction collision the transfer just created at the survivor (see
+ * `dedupeDirectionsAt`). Mutates `vertices`/`legs` in place. */
+function mergeVertexInto(
+  vertices: Record<string, TilingVertex>,
+  legs: Record<string, TilingLeg>,
+  survivorId: string,
+  victimId: string,
+  bins: BinGeometry,
+): void {
+  const direct = Object.values(legs).find(
+    (l) => (l.vertexA === survivorId && l.vertexB === victimId) || (l.vertexA === victimId && l.vertexB === survivorId),
+  )
+  if (direct) delete legs[direct.id]
+
+  for (const leg of Object.values(legs)) {
+    if (leg.vertexA === victimId) legs[leg.id] = { ...leg, vertexA: survivorId }
+    else if (leg.vertexB === victimId) legs[leg.id] = { ...leg, vertexB: survivorId }
+  }
+  delete vertices[victimId]
+  dedupeDirectionsAt(vertices, legs, survivorId, bins)
+}
+
+/** The first leg with some *other* vertex (not its own two endpoints)
+ * landing within `eps` of its segment, strictly between the endpoints --
+ * generalizes `splitDirectLegsThroughNearbyVertices` (seed-time-only, direct
+ * legs only, its own tiny fixed `NEAR_LINE_EPS`) to run continuously on any
+ * leg kind at the caller's configurable `eps`, kept as a separate function
+ * so the already-validated seed-time behavior stays untouched. Replaces
+ * that one leg with two new legs through the found vertex, both keeping the
+ * original `angle` (still collinear by construction, no re-derivation) and
+ * `kind` (a plain label with no control-flow significance anywhere in this
+ * codebase, so correct to preserve for an indirect leg too, unlike the
+ * seed-time function which hardcodes `'direct'` because only direct legs
+ * exist at that point in seeding). Returns `true` iff it changed something,
+ * so the caller can loop to catch more than one vertex on the same segment
+ * across iterations. Mutates `legs` in place (`vertices` untouched). */
+function trySplitOnce(vertices: Record<string, TilingVertex>, legs: Record<string, TilingLeg>, eps: number): boolean {
+  for (const leg of Object.values(legs)) {
+    const a = vertices[leg.vertexA]
+    const c = vertices[leg.vertexB]
+    if (!a || !c) continue
+    const hit = Object.values(vertices).find((v) => {
+      if (v.id === leg.vertexA || v.id === leg.vertexB) return false
+      const { t, perpDist } = pointToSegmentInfo(v, a, c)
+      return t > 1e-6 && t < 1 - 1e-6 && perpDist < eps
+    })
+    if (!hit) continue
+
+    const angle = legAngleAtVertex(leg, leg.vertexA)
+    delete legs[leg.id]
+    const id1 = nanoid()
+    const id2 = nanoid()
+    legs[id1] = { id: id1, kind: leg.kind, vertexA: leg.vertexA, vertexB: hit.id, angle }
+    legs[id2] = { id: id2, kind: leg.kind, vertexA: hit.id, vertexB: leg.vertexB, angle }
+    return true
+  }
+  return false
+}
+
+/** Running cleanup: called after every pointerup in the tiling editor (see
+ * `state/store.ts`'s `runTilingCleanup` action) to repair near-degeneracies
+ * a drag can introduce live -- the same two kinds `seedTilingGraph`'s Layer
+ * 3 one-shot post-process already cleans up at seed time, generalized to
+ * run continuously at a user-configurable `eps`
+ * (`hyperparams.tilingMinFeatureSize`): any two vertices closer than `eps`
+ * get merged (unless both are flaps -- see `findMergeCandidate`), and any
+ * vertex within `eps` of an unrelated leg's segment splits that leg through
+ * it (see `trySplitOnce`). Merge is tried before split each iteration
+ * (mirroring Layer 3's own ordering rationale: a merge can create a new
+ * split opportunity, so resolving it first avoids a split a subsequent
+ * merge would immediately invalidate); the loop re-scans the mutated state
+ * each time, so a cascade in either direction (a split's new vertex ending
+ * up near something else; a merge's survivor landing near a third leg)
+ * naturally resolves to a fixed point. Neither operation moves a vertex --
+ * both are purely topological -- so positions are only re-solved once, at
+ * the end, snapping everything back onto exact `Ax=b` consistency (a
+ * transferred leg's angle, or a split's collinearity, is only accurate to
+ * within `eps` until then). Returns `graph` unchanged (same reference) when
+ * there's nothing to clean, so the caller can skip a `set()`. */
+export function runTilingCleanup(graph: TilingGraphState, tree: TreeState, hyperparams: HyperparamsState, eps: number): TilingGraphState {
+  const bins = binsFor(hyperparams, graph.constraints)
+  if (!bins) return graph
+
+  const vertices = { ...graph.vertices }
+  const legs = { ...graph.legs }
+  let changed = false
+  const cap = 4 * Object.keys(vertices).length + 16 // mirrors computeStraightSkeleton's iteration-cap style
+  for (let i = 0; i < cap; i++) {
+    const merge = findMergeCandidate(vertices, eps)
+    if (merge) {
+      mergeVertexInto(vertices, legs, merge.survivorId, merge.victimId, bins)
+      changed = true
+      continue
+    }
+    if (trySplitOnce(vertices, legs, eps)) {
+      changed = true
+      continue
+    }
+    break
+  }
+  if (!changed) return graph
+
+  const skeletonLocks = graph.skeletonLocks.filter((lock) => lock.legIds.every((id) => legs[id]))
+  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks }
+  const vertexIds = Object.keys(vertices)
+  const columns = buildColumnIndex(vertexIds)
+  const rows = activeRows(nextGraph, tree)
+  const x0 = flattenPositions(vertexIds, columns, vertices)
+  const solved = solveMinPerturbation(rows, columns, x0)
+  const finalVertices = applyPositions(vertices, unflattenPositions(vertexIds, columns, solved))
+  return finalize({ ...nextGraph, vertices: finalVertices }, tree)
+}
+
 /** Rebuilds the graph's rows from a new `constraints` value and re-solves
  * unconditionally -- no rank-check gate, matching `build_base_rows`'s own
  * precedent (base/user-declared constraints are always added
@@ -799,7 +1037,7 @@ function applyConstraintChange(graph: TilingGraphState, tree: TreeState, nextCon
   const nextGraph: TilingGraphState = { ...graph, constraints: nextConstraints }
   const vertexIds = Object.keys(nextGraph.vertices)
   const columns = buildColumnIndex(vertexIds)
-  const rows = [...allBaseRows(nextGraph, tree), ...legRows(nextGraph)]
+  const rows = activeRows(nextGraph, tree)
   const x0 = flattenPositions(vertexIds, columns, nextGraph.vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
   const vertices = applyPositions(nextGraph.vertices, unflattenPositions(vertexIds, columns, solved))
@@ -871,6 +1109,110 @@ export function toggleTilingVertexLock(graph: TilingGraphState, tree: TreeState,
   const vertex = graph.vertices[flapId]
   if (!vertex) return graph
   return applyConstraintChange(graph, tree, withLocked(graph.constraints, flapId, { x: vertex.x, y: vertex.y }))
+}
+
+/** Locks (or, when called with a union of two existing locked/unlocked
+ * vertices' edge sets, merges) a straight-skeleton incircle vertex: adds
+ * `n - 3` cotangent rows for `legIds` (see `geometry/tilingCotangent.ts`) and
+ * immediately re-solves, same `tryAccept`-gate-then-solve shape as
+ * `addDirectLeg`. Absorbs (drops) any existing lock that's a subset of the
+ * new edge set rather than stacking a redundant extra one -- the case a
+ * "merge" hits when either endpoint of the merged ridge was already
+ * individually locked.
+ *
+ * Every edge's cotangency row needs a face-boundary-consistent inward
+ * direction, not just its own stored `vertexA -> vertexB` direction (which
+ * is independent of which way any given face's CCW boundary walk happens to
+ * traverse it -- a leg shared by two faces is traversed oppositely by
+ * each). Finding the one face all `legIds` sit on and reading each edge's
+ * `entryVertexId` off of *that* face's boundary order (rather than trusting
+ * the caller) is both how the orientation gets fixed and how a caller
+ * mistake (edges that don't all belong to one face) gets caught early. */
+export function setSkeletonLock(graph: TilingGraphState, tree: TreeState, legIds: string[]): Result<TilingGraphState> {
+  const deduped = Array.from(new Set(legIds))
+  if (deduped.length < 4) return { error: 'Need at least 4 edges to lock a cotangent incircle.' }
+  if (!deduped.every((id) => graph.legs[id])) return { error: 'One of the selected edges no longer exists.' }
+
+  const legsList = Object.values(graph.legs)
+  const face = computeFaces(graph.vertices, legsList).find((f) => {
+    const faceLegIds = legIdByFaceEdge(f, legsList)
+    return deduped.every((id) => faceLegIds.includes(id))
+  })
+  if (!face) return { error: "These edges don't all sit on a single face." }
+  const faceLegIds = legIdByFaceEdge(face, legsList)
+  const entryVertexIds = deduped.map((legId) => face.vertexIds[faceLegIds.indexOf(legId)])
+  const pairs = deduped.map((legId, i) => ({ legId, entryVertexId: entryVertexIds[i] }))
+
+  const otherLocks = graph.skeletonLocks.filter((lock) => !lock.legIds.every((id) => deduped.includes(id)))
+  const vertexIds = Object.keys(graph.vertices)
+  const columns = buildColumnIndex(vertexIds)
+  const existingRows = [...allBaseRows(graph, tree), ...legRows(graph), ...lockRows({ ...graph, skeletonLocks: otherLocks })]
+  const newRows = slidingQuadruplets(pairs).flatMap((quad) => {
+    const row = cotangentRow(
+      quad.map(({ legId, entryVertexId }) => ({ vertexId: entryVertexId, angle: legAngleAtVertex(graph.legs[legId], entryVertexId) })),
+    )
+    return row ? [row] : []
+  })
+  if (newRows.length === 0) return { error: "These edges' directions don't admit a common incircle." }
+  if (!tryAccept(existingRows, newRows, columns)) {
+    return { error: 'Locking this vertex would overconstrain the tiling.' }
+  }
+
+  const x0 = flattenPositions(vertexIds, columns, graph.vertices)
+  const solved = solveMinPerturbation([...existingRows, ...newRows], columns, x0)
+  const vertices = applyPositions(graph.vertices, unflattenPositions(vertexIds, columns, solved))
+
+  // A least-squares solve always finds *some* point satisfying the linear
+  // cotangency rows (see `lockRows`'s doc -- once accepted, always exactly
+  // satisfied), but that's necessary, not sufficient, for a genuine
+  // positive-radius common incircle: the same homogeneous linear system is
+  // equally satisfied by the degenerate limit of every edge collapsing to
+  // one point (radius 0). Recomputing the real wavefront simulation on the
+  // solved positions is the only way to tell "a sensible nearby merge"
+  // apart from "the selected edges were too far apart, so least-squares
+  // reached for the nearest degenerate solution instead" -- reject the
+  // latter outright (no state change committed) rather than silently
+  // applying it.
+  const previewFace = computeFaces(vertices, legsList).find((f) => f.id === face.id)
+  const previewLegIds = previewFace && legIdByFaceEdge(previewFace, legsList)
+  const previewSkeleton = previewFace && computeStraightSkeleton(previewFace.vertexIds.map((id) => vertices[id]))
+  const found = previewSkeleton?.nodes.some((node) => {
+    const nodeLegIds = node.tangentEdges.map((i) => previewLegIds?.[i]).filter((x): x is string => x != null)
+    return deduped.every((id) => nodeLegIds.includes(id))
+  })
+  if (!found) {
+    return { error: 'These vertices are too far apart to merge into one point -- try moving them closer first.' }
+  }
+
+  const skeletonLocks: SkeletonLock[] = [...otherLocks, { legIds: deduped, entryVertexIds }]
+  return { graph: finalize({ ...graph, vertices, skeletonLocks }, tree) }
+}
+
+/** Drops the lock matching `legIds` exactly (no re-solve of positions needed
+ * -- dropping a constraint can't violate anything, only loosen the null
+ * space; `finalize` recomputes `dof`/`freeAxes`/`nullSpaceBasis` for the
+ * now-smaller row set). */
+export function unlockSkeletonVertex(graph: TilingGraphState, tree: TreeState, legIds: string[]): TilingGraphState {
+  const sig = signatureOf(legIds)
+  const skeletonLocks = graph.skeletonLocks.filter((lock) => signatureOf(lock.legIds) !== sig)
+  return finalize({ ...graph, skeletonLocks }, tree)
+}
+
+/** Drops any lock whose signature no longer appears among `liveSignatures`
+ * -- the reactive half of "if the vertex is no longer part of the straight
+ * skeleton... the constraint is released": the algebraic rows stay exactly
+ * satisfied for as long as they're included (see `activeRows`'s doc), but
+ * the *topological* wavefront simulation (`computeStraightSkeleton`) can
+ * still stop producing a node with this exact tangent-edge set if some
+ * other edge's event pre-empts it -- that can only be detected against the
+ * live computed skeleton, which only `TilingEditorCanvas.tsx` has, so this
+ * is called reactively from there rather than from any committed edit.
+ * Returns `graph` unchanged (same reference) when nothing needs dropping,
+ * so callers can skip a `set()` when nothing changed. */
+export function pruneStaleSkeletonLocks(graph: TilingGraphState, tree: TreeState, liveSignatures: Set<string>): TilingGraphState {
+  const kept = graph.skeletonLocks.filter((lock) => liveSignatures.has(signatureOf(lock.legIds)))
+  if (kept.length === graph.skeletonLocks.length) return graph
+  return finalize({ ...graph, skeletonLocks: kept }, tree)
 }
 
 /** Applies a drag of `vertexId` toward `desiredPosition` as a linear

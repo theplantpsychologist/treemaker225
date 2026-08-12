@@ -148,6 +148,42 @@
   fill: none;
 }
 
+/* A clickable straight-skeleton (incircle) vertex -- plotted for every
+   interior node, same visual language as `.tiling-vertex-dot` above but a
+   distinct color so it doesn't read as a graph vertex. A ring around a
+   locked one shows its cotangent-incircle constraint is active. */
+.tiling-skeleton-vertex-dot {
+  fill: #059669;
+  cursor: pointer;
+}
+
+.tiling-skeleton-vertex-dot.armed {
+  fill: var(--accent);
+}
+
+.tiling-skeleton-lock-ring {
+  fill: none;
+  stroke: #059669;
+  stroke-width: var(--sw-thin);
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* Invisible wider stroke layered over a clickable interior ridge (both
+   endpoints interior straight-skeleton nodes) -- same enlarge-the-hit-area
+   technique as `.tiling-bend-preview-hit`. */
+.tiling-skeleton-ridge-hit {
+  stroke: transparent;
+  stroke-width: 20px;
+  vector-effect: non-scaling-stroke;
+  fill: none;
+  cursor: pointer;
+}
+
+.tiling-ridge.selected {
+  stroke: var(--accent);
+}
+
 .tiling-dof-readout {
   position: absolute;
   bottom: 0.5rem;

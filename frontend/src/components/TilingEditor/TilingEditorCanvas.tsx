@@ -5,6 +5,7 @@ import { buildShapePoints, extraRotationFor } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeFaces } from '../../geometry/planarFaces'
 import { computeHinges, computeStraightSkeleton } from '../../geometry/straightSkeleton'
+import { signatureOf } from '../../geometry/tilingCotangent'
 import { useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import { VIEW_SIZE } from '../PackingEditor/usePackingEditorInteraction'
 import { useTilingEditorInteraction } from './useTilingEditorInteraction'
@@ -73,10 +74,14 @@ export function TilingEditorCanvas() {
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
   const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
+  const tilingSkeletonSelection = useAppStore((s) => s.tilingSkeletonSelection)
   const clearTilingSelection = useAppStore((s) => s.clearTilingSelection)
   const deleteSelectedTilingLeg = useAppStore((s) => s.deleteSelectedTilingLeg)
   const deleteSelectedTilingVertex = useAppStore((s) => s.deleteSelectedTilingVertex)
   const chooseTilingPathOption = useAppStore((s) => s.chooseTilingPathOption)
+  const selectTilingSkeletonVertex = useAppStore((s) => s.selectTilingSkeletonVertex)
+  const selectTilingSkeletonRidge = useAppStore((s) => s.selectTilingSkeletonRidge)
+  const pruneStaleTilingSkeletonLocks = useAppStore((s) => s.pruneStaleTilingSkeletonLocks)
   const pan = useViewBoxPanZoom(svgRef, { x: 0, y: 0, w: VIEW_SIZE, h: VIEW_SIZE })
   const { beginVertexPointerDown, onLegPointerDown, onPointerMove, onPointerUp } = useTilingEditorInteraction(svgRef)
 
@@ -160,7 +165,12 @@ export function TilingEditorCanvas() {
   }, [tilingGraph?.legs])
 
   // Geometry -- recomputes every render (including every drag frame) since
-  // it depends on live vertex positions, not just topology.
+  // it depends on live vertex positions, not just topology. `legIdByEdgeIndex`
+  // maps each of `computeStraightSkeleton`'s internal `edges[i]` (always
+  // `face.vertexIds[i] -> face.vertexIds[i+1]`) back to the real leg
+  // connecting that pair -- always exists, since a face's boundary edges are
+  // always real legs -- giving every skeleton node/ridge a stable identity
+  // (its constituent legs' ids) independent of this per-call array index.
   const skeletons = useMemo(() => {
     if (!tilingGraph) return []
     return faces
@@ -168,10 +178,55 @@ export function TilingEditorCanvas() {
         const polygon = face.vertexIds.map((id) => tilingGraph.vertices[id])
         const skeleton = computeStraightSkeleton(polygon)
         if (!skeleton) return null
-        return { faceId: face.id, skeleton, hinges: computeHinges(skeleton.nodes, skeleton.edges) }
+        const n = face.vertexIds.length
+        const legIdByEdgeIndex = face.vertexIds.map((a, i) => {
+          const b = face.vertexIds[(i + 1) % n]
+          return Object.values(tilingGraph.legs).find((l) => (l.vertexA === a && l.vertexB === b) || (l.vertexA === b && l.vertexB === a))?.id
+        })
+        return { faceId: face.id, skeleton, hinges: computeHinges(skeleton.nodes, skeleton.edges), legIdByEdgeIndex }
       })
-      .filter((s): s is { faceId: string; skeleton: NonNullable<ReturnType<typeof computeStraightSkeleton>>; hinges: ReturnType<typeof computeHinges> } => s !== null)
+      .filter(
+        (
+          s,
+        ): s is {
+          faceId: string
+          skeleton: NonNullable<ReturnType<typeof computeStraightSkeleton>>
+          hinges: ReturnType<typeof computeHinges>
+          legIdByEdgeIndex: (string | undefined)[]
+        } => s !== null,
+      )
   }, [faces, tilingGraph])
+
+  // Nodes' `legIds` (via `legIdByEdgeIndex`) -- computed once per skeletons
+  // recompute, reused by both the stale-lock-release effect below and the
+  // dot/ring rendering further down. A node whose `tangentEdges` fail to
+  // fully resolve to real leg ids (shouldn't happen -- every face boundary
+  // edge is always a real leg -- but degrades safely rather than silently
+  // under-counting) is dropped rather than shown with a wrong edge count.
+  const skeletonNodesWithLegIds = useMemo(
+    () =>
+      skeletons.map(({ faceId, skeleton, legIdByEdgeIndex }) => ({
+        faceId,
+        skeleton,
+        nodes: skeleton.nodes
+          .map((node) => ({ node, legIds: node.tangentEdges.map((i) => legIdByEdgeIndex[i]) }))
+          .filter((n): n is { node: (typeof skeleton.nodes)[number]; legIds: string[] } => n.legIds.every((id) => id != null)),
+      })),
+    [skeletons],
+  )
+
+  // Reactive release of any lock whose live geometry has broken (the
+  // straight skeleton no longer produces a node with exactly this
+  // tangent-edge set) -- see `pruneStaleSkeletonLocks`'s doc. Runs after
+  // every recompute of the live skeleton, including drag frames; the store
+  // action itself no-ops (no `set()`) when nothing actually changed.
+  useEffect(() => {
+    if (!tilingGraph || tilingGraph.skeletonLocks.length === 0) return
+    const live = new Set(
+      skeletonNodesWithLegIds.flatMap(({ nodes }) => nodes.map(({ legIds }) => signatureOf(legIds))),
+    )
+    pruneStaleTilingSkeletonLocks(live)
+  }, [skeletonNodesWithLegIds, tilingGraph, pruneStaleTilingSkeletonLocks])
 
   return (
     <div className="tiling-editor-wrapper">
@@ -206,20 +261,41 @@ export function TilingEditorCanvas() {
             <polygon key={`tiling-flap-${f.key}`} className="tiling-flap" points={f.points} />
           ))}
 
-          {skeletons.flatMap(({ faceId, skeleton }) =>
+          {skeletonNodesWithLegIds.flatMap(({ faceId, skeleton, nodes }) =>
             skeleton.ridges.map((r, i) => {
               const [x1, y1] = toScreen(r.start.x, r.start.y)
               const [x2, y2] = toScreen(r.end.x, r.end.y)
-              return (
-                <line
-                  key={`tiling-ridge-${faceId}-${i}`}
-                  className={`tiling-ridge${r.isReflexBoundary ? ' concave' : ''}`}
-                  x1={x1}
-                  y1={y1}
-                  x2={x2}
-                  y2={y2}
-                />
-              )
+              const className = `tiling-ridge${r.isReflexBoundary ? ' concave' : ''}`
+              // An "interior" ridge (both endpoints interior straight-skeleton
+              // nodes, not the original polygon boundary) is clickable --
+              // resolve each endpoint to its owning node's legIds by position
+              // match, then offer the same invisible-wide-hit-line technique
+              // already used for path-preview lines.
+              if (!r.startIsBoundary && !r.endIsBoundary) {
+                const nodeAt = (p: { x: number; y: number }) =>
+                  nodes.find(({ node }) => Math.hypot(node.position.x - p.x, node.position.y - p.y) < 1e-6)
+                const startNode = nodeAt(r.start)
+                const endNode = nodeAt(r.end)
+                if (startNode && endNode && startNode.legIds.length >= 3 && endNode.legIds.length >= 3) {
+                  const isSelected =
+                    tilingSkeletonSelection?.kind === 'ridge' &&
+                    ((signatureOf(tilingSkeletonSelection.legIdsA) === signatureOf(startNode.legIds) &&
+                      signatureOf(tilingSkeletonSelection.legIdsB) === signatureOf(endNode.legIds)) ||
+                      (signatureOf(tilingSkeletonSelection.legIdsA) === signatureOf(endNode.legIds) &&
+                        signatureOf(tilingSkeletonSelection.legIdsB) === signatureOf(startNode.legIds)))
+                  return (
+                    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+                    <g
+                      key={`tiling-ridge-${faceId}-${i}`}
+                      onClick={() => selectTilingSkeletonRidge(startNode.legIds, endNode.legIds)}
+                    >
+                      <line className="tiling-skeleton-ridge-hit" x1={x1} y1={y1} x2={x2} y2={y2} />
+                      <line className={`${className}${isSelected ? ' selected' : ''}`} x1={x1} y1={y1} x2={x2} y2={y2} />
+                    </g>
+                  )
+                }
+              }
+              return <line key={`tiling-ridge-${faceId}-${i}`} className={className} x1={x1} y1={y1} x2={x2} y2={y2} />
             }),
           )}
           {skeletons.flatMap(({ faceId, hinges }) =>
@@ -301,6 +377,31 @@ export function TilingEditorCanvas() {
               </g>
             )
           })}
+
+        {tilingGraph &&
+          skeletonNodesWithLegIds.flatMap(({ faceId, nodes }) =>
+            nodes.map(({ node, legIds }, i) => {
+              const sig = signatureOf(legIds)
+              const locked = tilingGraph.skeletonLocks.some((l) => signatureOf(l.legIds) === sig)
+              const selected = tilingSkeletonSelection?.kind === 'vertex' && signatureOf(tilingSkeletonSelection.legIds) === sig
+              const [x, y] = toScreen(node.position.x, node.position.y)
+              return (
+                <g key={`tiling-skeleton-vertex-${faceId}-${i}`}>
+                  {locked && <circle className="tiling-skeleton-lock-ring" cx={x} cy={y} r={7} />}
+                  <circle
+                    className={`tiling-skeleton-vertex-dot${selected ? ' armed' : ''}`}
+                    cx={x}
+                    cy={y}
+                    r={4}
+                    onPointerDown={(e) => {
+                      e.stopPropagation()
+                      selectTilingSkeletonVertex(legIds)
+                    }}
+                  />
+                </g>
+              )
+            }),
+          )}
       </svg>
       {tilingGraph ? (
         <div className="tiling-dof-readout">Degrees of freedom: {tilingGraph.dof}</div>

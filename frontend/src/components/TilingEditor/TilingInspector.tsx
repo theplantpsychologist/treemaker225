@@ -2,6 +2,7 @@ import { useAppStore } from '../../state/store'
 import type { CornerId, EdgeSide, LeafConstraint } from '../../types/constraints'
 import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
 import { isFullyFixedBySymmetryBoundary } from '../../geometry/constraintResolution'
+import { signatureOf } from '../../geometry/tilingCotangent'
 import { IconButton } from '../icons/IconButton'
 import pinSymmetryIcon from '../../assets/pin_symmetry.svg'
 import lockIcon from '../../assets/lock.svg'
@@ -50,6 +51,10 @@ export function TilingInspector() {
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
+  const tilingSkeletonSelection = useAppStore((s) => s.tilingSkeletonSelection)
+  const lockTilingSkeletonVertex = useAppStore((s) => s.lockTilingSkeletonVertex)
+  const unlockTilingSkeletonVertex = useAppStore((s) => s.unlockTilingSkeletonVertex)
+  const mergeTilingSkeletonVertices = useAppStore((s) => s.mergeTilingSkeletonVertices)
   const pinTilingVertexToSymmetry = useAppStore((s) => s.pinTilingVertexToSymmetry)
   const pinTilingVertexToEdge = useAppStore((s) => s.pinTilingVertexToEdge)
   const pinTilingVertexToCorner = useAppStore((s) => s.pinTilingVertexToCorner)
@@ -62,6 +67,48 @@ export function TilingInspector() {
   const selectTilingLeg = useAppStore((s) => s.selectTilingLeg)
 
   if (!tilingGraph) return null
+
+  if (tilingSkeletonSelection?.kind === 'vertex') {
+    const { legIds } = tilingSkeletonSelection
+    const degree = legIds.length
+    const isLocked = tilingGraph.skeletonLocks.some((l) => signatureOf(l.legIds) === signatureOf(legIds))
+    return (
+      <div className="inspector-rail">
+        <div className="inspector-panel">
+          <div className="inspector-panel-header">
+            <span className="inspector-label">incircle vertex: {degree} edges</span>
+            <IconButton icon={clearIcon} label="Deselect" onClick={clearTilingSelection} />
+          </div>
+          <div className="inspector-group-buttons">
+            <IconButton
+              icon={lockIcon}
+              label={isLocked ? 'Unlock cotangent incircle' : 'Lock cotangent incircle'}
+              active={isLocked}
+              disabled={!isLocked && degree < 4}
+              onClick={() => (isLocked ? unlockTilingSkeletonVertex(legIds) : lockTilingSkeletonVertex(legIds))}
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (tilingSkeletonSelection?.kind === 'ridge') {
+    const { legIdsA, legIdsB } = tilingSkeletonSelection
+    return (
+      <div className="inspector-rail">
+        <div className="inspector-panel">
+          <div className="inspector-panel-header">
+            <span className="inspector-label">interior edge</span>
+            <IconButton icon={clearIcon} label="Deselect" onClick={clearTilingSelection} />
+          </div>
+          <button className="inspector-text-button" onClick={() => mergeTilingSkeletonVertices(legIdsA, legIdsB)}>
+            Merge
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (tilingSelectedLegId) {
     const leg = tilingGraph.legs[tilingSelectedLegId]

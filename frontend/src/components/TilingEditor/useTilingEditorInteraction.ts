@@ -32,6 +32,7 @@ export function useTilingEditorInteraction(svgRef: RefObject<SVGSVGElement | nul
   const selectTilingLeg = useAppStore((s) => s.selectTilingLeg)
   const dragTilingVertexStart = useAppStore((s) => s.dragTilingVertexStart)
   const dragTilingVertexTo = useAppStore((s) => s.dragTilingVertexTo)
+  const runTilingCleanup = useAppStore((s) => s.runTilingCleanup)
 
   const dragState = useRef<DragState | null>(null)
 
@@ -95,7 +96,11 @@ export function useTilingEditorInteraction(svgRef: RefObject<SVGSVGElement | nul
       selectTilingVertex(ds.vertexId, ds.shiftKey)
     }
     dragState.current = null
-  }, [selectTilingVertex])
+    // Running cleanup after every pointerup, drag or plain click alike (a
+    // plain click is a cheap no-op fast path -- see `runTilingCleanup`'s
+    // own doc for why nothing moved means nothing to clean).
+    runTilingCleanup()
+  }, [selectTilingVertex, runTilingCleanup])
 
   return { beginVertexPointerDown, onLegPointerDown, onPointerMove, onPointerUp }
 }

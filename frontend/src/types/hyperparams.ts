@@ -89,6 +89,12 @@ export interface HyperparamsState {
    * pathNetworkMFloor. */
   pathNetworkMDecay: number
   pathNetworkMFloor: number
+  /** Manual tiling editor: the minimum on-screen feature size (unit-square
+   * units) below which the running cleanup pass (see `state/actions/
+   * tilingGraphActions.ts`'s `runTilingCleanup`, called after every
+   * pointerup in the tiling editor) snaps two near-coincident vertices
+   * together or splits a leg a vertex has drifted onto. */
+  tilingMinFeatureSize: number
 }
 
 export const DEFAULT_HYPERPARAMS: HyperparamsState = {
@@ -121,4 +127,5 @@ export const DEFAULT_HYPERPARAMS: HyperparamsState = {
   pathNetworkMLengthStart: 4.0,
   pathNetworkMDecay: 0.5,
   pathNetworkMFloor: 0.05,
+  tilingMinFeatureSize: 0.01,
 }

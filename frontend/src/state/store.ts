@@ -3,6 +3,7 @@ import { API_BASE, fetchPathNetworkSnap, fetchSnapPaths, fetchSolve, fetchTiling
 import type { PathNetworkResponse } from '../types/pathNetwork'
 import type { TilingResponse } from '../types/tiling'
 import type { TilingGraphState, TilingPathCandidates } from '../types/tilingGraph'
+import { signatureOf } from '../geometry/tilingCotangent'
 import type { ConstraintsState, CornerId, EdgeSide, LeafConstraint, SymmetryMode } from '../types/constraints'
 import { DEFAULT_CONSTRAINTS, NO_LEAF_CONSTRAINT } from '../types/constraints'
 import type { HyperparamsState } from '../types/hyperparams'
@@ -22,8 +23,12 @@ import {
   pinTilingVertexToSymmetry as pinTilingVertexToSymmetryAction,
   previewPathCandidates,
   projectVertexDrag,
+  pruneStaleSkeletonLocks,
+  runTilingCleanup as runTilingCleanupAction,
   seedTilingGraph as seedTilingGraphAction,
+  setSkeletonLock,
   toggleTilingVertexLock as toggleTilingVertexLockAction,
+  unlockSkeletonVertex,
 } from './actions/tilingGraphActions'
 import { backfillMissingPositions, computeNaiveInitialization, naiveScale } from '../geometry/naiveInit'
 import {
@@ -104,6 +109,12 @@ interface AppState {
    * awaiting the user's choice before anything is committed. */
   tilingPathCandidates: TilingPathCandidates | null
   tilingSelectedLegId: string | null
+  /** A selected straight-skeleton incircle vertex (by its constituent legs'
+   * ids) or interior ridge (by both endpoints' leg-id sets) -- mutually
+   * exclusive with the vertex/leg selection above by construction (every
+   * selector clears the others). See `geometry/tilingCotangent.ts`'s
+   * `signatureOf` for how a leg-id set becomes a stable identity. */
+  tilingSkeletonSelection: { kind: 'vertex'; legIds: string[] } | { kind: 'ridge'; legIdsA: string[]; legIdsB: string[] } | null
   tilingError: string | null
   /** True while `seedTilingGraph`'s one best-effort network call is in
    * flight -- separate from the packing-solve `solving` flag so seeding
@@ -170,9 +181,16 @@ interface AppState {
   clearTilingVertexSymmetry: (flapId: string) => void
   clearTilingVertexBoundary: (flapId: string) => void
   toggleTilingVertexLock: (flapId: string) => void
+  selectTilingSkeletonVertex: (legIds: string[]) => void
+  selectTilingSkeletonRidge: (legIdsA: string[], legIdsB: string[]) => void
+  lockTilingSkeletonVertex: (legIds: string[]) => void
+  unlockTilingSkeletonVertex: (legIds: string[]) => void
+  mergeTilingSkeletonVertices: (legIdsA: string[], legIdsB: string[]) => void
+  pruneStaleTilingSkeletonLocks: (liveSignatures: Set<string>) => void
   clearTilingError: () => void
   dragTilingVertexStart: () => void
   dragTilingVertexTo: (vertexId: string, x: number, y: number) => void
+  runTilingCleanup: () => void
 
   exportSession: () => void
   importSession: (data: unknown) => void
@@ -202,6 +220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tilingSelectedVertexIds: [],
   tilingPathCandidates: null,
   tilingSelectedLegId: null,
+  tilingSkeletonSelection: null,
   tilingError: null,
   tilingSeeding: false,
 
@@ -241,6 +260,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
+      tilingSkeletonSelection: null,
       tilingError: null,
     })
   },
@@ -264,6 +284,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
+      tilingSkeletonSelection: null,
       tilingError: null,
     })
   },
@@ -289,6 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
+      tilingSkeletonSelection: null,
       tilingError: null,
       undoStack,
       redoStack: [],
@@ -922,14 +944,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { tilingGraph, tilingSelectedVertexIds } = state
     if (!tilingGraph) return
     if (!additive || tilingSelectedVertexIds.length === 0) {
-      set({ tilingSelectedVertexIds: [vertexId], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: null })
+      set({
+        tilingSelectedVertexIds: [vertexId],
+        tilingPathCandidates: null,
+        tilingSelectedLegId: null,
+        tilingSkeletonSelection: null,
+        tilingError: null,
+      })
       return
     }
     if (tilingSelectedVertexIds.includes(vertexId)) return
     const nextIds =
       tilingSelectedVertexIds.length >= 2 ? [tilingSelectedVertexIds[1], vertexId] : [...tilingSelectedVertexIds, vertexId]
     if (nextIds.length !== 2) {
-      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null })
+      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null, tilingSkeletonSelection: null })
       return
     }
     const preview = previewPathCandidates(tilingGraph, state.hyperparams, nextIds[0], nextIds[1])
@@ -978,9 +1006,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ tilingGraph: result.graph, tilingPathCandidates: null, tilingSelectedVertexIds: [], tilingError: null })
   },
 
-  clearTilingSelection: () => set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null }),
+  clearTilingSelection: () =>
+    set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingSkeletonSelection: null }),
 
-  selectTilingLeg: (legId) => set({ tilingSelectedLegId: legId, tilingSelectedVertexIds: [], tilingPathCandidates: null }),
+  selectTilingLeg: (legId) =>
+    set({ tilingSelectedLegId: legId, tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSkeletonSelection: null }),
 
   deleteSelectedTilingLeg: () => {
     const state = get()
@@ -1057,6 +1087,72 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ tilingGraph: toggleTilingVertexLockAction(state.tilingGraph, state.tree, flapId) })
   },
 
+  selectTilingSkeletonVertex: (legIds) =>
+    set({
+      tilingSkeletonSelection: { kind: 'vertex', legIds },
+      tilingSelectedVertexIds: [],
+      tilingSelectedLegId: null,
+      tilingPathCandidates: null,
+    }),
+
+  selectTilingSkeletonRidge: (legIdsA, legIdsB) =>
+    set({
+      tilingSkeletonSelection: { kind: 'ridge', legIdsA, legIdsB },
+      tilingSelectedVertexIds: [],
+      tilingSelectedLegId: null,
+      tilingPathCandidates: null,
+    }),
+
+  lockTilingSkeletonVertex: (legIds) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const result = setSkeletonLock(state.tilingGraph, state.tree, legIds)
+    if ('error' in result) {
+      set({ tilingError: result.error })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingSkeletonSelection: { kind: 'vertex', legIds }, tilingError: null })
+  },
+
+  unlockTilingSkeletonVertex: (legIds) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    get().pushUndoSnapshot()
+    set({ tilingGraph: unlockSkeletonVertex(state.tilingGraph, state.tree, legIds), tilingSkeletonSelection: { kind: 'vertex', legIds } })
+  },
+
+  mergeTilingSkeletonVertices: (legIdsA, legIdsB) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    // Deduped up front (not just inside `setSkeletonLock`) so the post-merge
+    // selection's edge count/signature matches the lock it actually created
+    // -- the two merged nodes can share edges (e.g. a rectangle's 2 interior
+    // nodes each touch 3 of its 4 sides, overlapping on 2).
+    const mergedLegIds = Array.from(new Set([...legIdsA, ...legIdsB]))
+    const result = setSkeletonLock(state.tilingGraph, state.tree, mergedLegIds)
+    if ('error' in result) {
+      set({ tilingError: result.error })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingSkeletonSelection: { kind: 'vertex', legIds: mergedLegIds }, tilingError: null })
+  },
+
+  /** Reactive, non-undoable pruning of locks whose live geometry has broken
+   * (see `pruneStaleSkeletonLocks`'s doc) -- called from
+   * `TilingEditorCanvas.tsx` after every recompute of the live straight
+   * skeleton, not from any user gesture. */
+  pruneStaleTilingSkeletonLocks: (liveSignatures) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const pruned = pruneStaleSkeletonLocks(state.tilingGraph, state.tree, liveSignatures)
+    if (pruned === state.tilingGraph) return
+    const stillSelected =
+      state.tilingSkeletonSelection?.kind === 'vertex' && liveSignatures.has(signatureOf(state.tilingSkeletonSelection.legIds))
+    set({ tilingGraph: pruned, tilingSkeletonSelection: stillSelected ? state.tilingSkeletonSelection : null })
+  },
+
   clearTilingError: () => set({ tilingError: null }),
 
   /** Pushes one undo snapshot at the start of a vertex-drag gesture (not
@@ -1075,6 +1171,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (v) vertices[id] = { ...v, x: p.x, y: p.y }
     }
     set({ tilingGraph: { ...tilingGraph, vertices } })
+  },
+
+  /** Called after every pointerup in the tiling editor (see
+   * `useTilingEditorInteraction.ts`'s `onPointerUp`) -- merges any vertices
+   * a drag brought within `hyperparams.tilingMinFeatureSize` of each other
+   * and splits any leg a vertex drifted onto. No `pushUndoSnapshot()`: this
+   * is a passive automatic correction (same precedent as
+   * `pruneStaleTilingSkeletonLocks`), not a new user gesture -- the drag
+   * that caused the near-degeneracy already pushed one snapshot at
+   * `dragTilingVertexStart`, and undo should land back before the drag, not
+   * in some intermediate half-cleaned state. */
+  runTilingCleanup: () => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const cleaned = runTilingCleanupAction(state.tilingGraph, state.tree, state.hyperparams, state.hyperparams.tilingMinFeatureSize)
+    if (cleaned === state.tilingGraph) return
+    set({ tilingGraph: cleaned })
   },
 
   exportSession: () => {
