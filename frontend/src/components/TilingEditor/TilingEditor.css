@@ -73,14 +73,55 @@
 }
 
 /* A perpendicular from a straight-skeleton node to one of its tangent
-   sides -- faded/neutral, purely diagnostic. */
+   sides, extended into a full chain -- faded/neutral by default so
+   double-covered segments (see `geometry/hingeChains.ts`'s dedup pass) are
+   easy to spot as an unusually-opaque overlap, selectable via the paired
+   `.tiling-hinge-hit` line below. */
 .tiling-hinge {
   fill: none;
   stroke: #9ca3af;
-  stroke-opacity: 0.6;
-  stroke-width: var(--sw-hairline);
+  stroke-opacity: 0.3;
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
+}
+
+.tiling-hinge.selected {
+  stroke: var(--accent);
+  stroke-opacity: 1;
+  stroke-width: 3;
+}
+
+/* Invisible wider stroke layered over each hinge chain, purely to enlarge
+   the clickable area -- same technique as `.tiling-bend-preview-hit`. */
+.tiling-hinge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14px;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+
+/* The fused connector for a committed chain-collinearity `HingeChainLock`
+   -- source to source through the (now shared) point on the common leg.
+   Drawn in the same `--accent` color used everywhere else in this editor to
+   mark an active constraint (e.g. `.tiling-skeleton-lock-ring` below), not
+   the neutral gray of an ordinary diagnostic hinge, so a constrained crease
+   reads at a glance as deliberately locked rather than merely a thicker
+   coincidental overlap; wider than a plain `.tiling-hinge` too, so it reads
+   as one continuous crease rather than two ordinary hinges end to end. */
+.tiling-hinge-chain-locked {
+  fill: none;
+  stroke: var(--accent);
+  stroke-opacity: 0.55;
+  stroke-width: 4.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.tiling-hinge-chain-locked.selected {
+  stroke-opacity: 1;
+  stroke-width: 5.5;
 }
 
 /* A user-built crease -- direct or one leg of an indirect path, rendered

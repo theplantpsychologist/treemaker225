@@ -5,12 +5,15 @@ import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
 import type { HyperparamsState } from '../../types/hyperparams'
 import type { TreeState } from '../../types/tree'
 import { toTreeIn } from '../../types/tree'
-import type { SkeletonLock, TilingGraphState, TilingLeg, TilingPathCandidates, TilingVertex } from '../../types/tilingGraph'
+import type { HingeChainLock, SkeletonLock, TilingGraphState, TilingLeg, TilingPathCandidates, TilingVertex } from '../../types/tilingGraph'
 import type { PathOption } from '../../geometry/tilingGraphOps'
 import type { Point } from '../../geometry/symmetry'
 import { cotangentRow, signatureOf, slidingQuadruplets } from '../../geometry/tilingCotangent'
 import { computeFaces, legIdByFaceEdge } from '../../geometry/planarFaces'
 import { computeStraightSkeleton } from '../../geometry/straightSkeleton'
+import { computeHingeChains, type HingeChain, type ResolvedSkeletonFace } from '../../geometry/hingeChains'
+import { prepareMirrors, type MirrorSegment } from '../../geometry/hingeRayCast'
+import { buildHingeChainConstraint, findCommonLeg, type HingeChainRef } from '../../geometry/hingeChainLock'
 import { getLeaves } from '../../geometry/treeGeometry'
 import { extraRotationFor } from '../../geometry/shapes'
 import { buildBaseRows } from '../../geometry/tilingBaseRows'
@@ -117,14 +120,99 @@ function lockRows(graph: TilingGraphState): Row[] {
   return rows
 }
 
+/** A `HingeChainSideLock`'s stored `crossings` omit `point` (never read by
+ * `buildHingeChainConstraint`/`findCommonLeg`, so never persisted) -- fill
+ * in a placeholder to satisfy `HingeChainRef`'s (i.e. `HingeChain`'s) own
+ * `HingeCrossing` shape. */
+function hingeChainRef(side: HingeChainLock['a']): HingeChainRef {
+  return { ...side, crossings: side.crossings.map((c) => ({ ...c, point: { x: 0, y: 0 } })) }
+}
+
+/** Rows for every active `HingeChainLock` -- re-derives
+ * `buildHingeChainConstraint` fresh from *current* `graph.legs` each time
+ * (angles never drift, so this is cheap), silently contributing nothing for
+ * a lock referencing a since-deleted leg or otherwise degenerate configuration
+ * (inert until `deleteTilingLeg`'s cascade or `pruneStaleTilingHingeChainLocks`
+ * releases it) -- same convention as `lockRows`. */
+function hingeChainLockRows(graph: TilingGraphState): Row[] {
+  const rows: Row[] = []
+  for (const lock of graph.hingeChainLocks) {
+    const result = buildHingeChainConstraint(hingeChainRef(lock.a), hingeChainRef(lock.b), lock.commonLegId, graph)
+    if ('row' in result) rows.push(result.row)
+  }
+  return rows
+}
+
 /** The full active row set for a solve/rank-check: user constraints, hull
- * pins, every leg's direction, and every locked incircle vertex's cotangent
- * rows. Every graph-mutating operation below must assemble its own solve
- * from this (not just `finalize`), since each one solves positions itself
- * before `finalize` ever runs -- patching only `finalize` would let
- * positions silently drift off a lock between edits. */
+ * pins, every leg's direction, every locked incircle vertex's cotangent
+ * rows, and every hinge-chain collinearity lock's row. Every graph-mutating
+ * operation below must assemble its own solve from this (not just
+ * `finalize`), since each one solves positions itself before `finalize`
+ * ever runs -- patching only `finalize` would let positions silently drift
+ * off a lock between edits. */
 function activeRows(graph: TilingGraphState, tree: TreeState): Row[] {
-  return [...allBaseRows(graph, tree), ...legRows(graph), ...lockRows(graph)]
+  return [...allBaseRows(graph, tree), ...legRows(graph), ...lockRows(graph), ...hingeChainLockRows(graph)]
+}
+
+/** The unit square's own 4 physical edges, in the same coordinates as
+ * every tiling vertex -- mirrors `TilingEditorCanvas.tsx`'s own copy (a
+ * hinge ray reaching one of these has run off the paper and stops there,
+ * see `hingeRayCast.ts`'s `castHingeRay`). Duplicated rather than shared
+ * since it's 4 fixed segments that never change; not worth a new module. */
+const UNIT_SQUARE_BOUNDARY = prepareMirrors([
+  { a: { x: 0, y: 0 }, b: { x: 1, y: 0 } },
+  { a: { x: 1, y: 0 }, b: { x: 1, y: 1 } },
+  { a: { x: 1, y: 1 }, b: { x: 0, y: 1 } },
+  { a: { x: 0, y: 1 }, b: { x: 0, y: 0 } },
+])
+
+/** Self-contained recompute of every live `HingeChain` for `graph` --
+ * mirrors `TilingEditorCanvas.tsx`'s own `skeletons`/`skeletonNodesWithLegIds`/
+ * `hingeChains` pipeline, but from scratch each call rather than reusing the
+ * canvas's per-render memo, since callers here (`setHingeChainLock`'s
+ * re-verify, `pruneStaleTilingHingeChainLocks`) run at most once per
+ * discrete user gesture (a click, or a mouseup), not once per render/drag
+ * frame -- see `state/store.ts`'s `runTilingCleanup`-adjacent wiring for
+ * where the mouseup gating actually happens. */
+function computeLiveHingeChains(graph: TilingGraphState, hyperparams: HyperparamsState, dedupe = true): HingeChain[] {
+  const legsList = Object.values(graph.legs)
+  const legMirrors: MirrorSegment[] = []
+  const legIdByMirrorIndex: string[] = []
+  for (const leg of legsList) {
+    const a = graph.vertices[leg.vertexA]
+    const b = graph.vertices[leg.vertexB]
+    if (a && b) {
+      legMirrors.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
+      legIdByMirrorIndex.push(leg.id)
+    }
+  }
+
+  const ridgeMirrors: MirrorSegment[] = []
+  const resolvedFaces: ResolvedSkeletonFace[] = []
+  for (const face of computeFaces(graph.vertices, legsList)) {
+    const polygon = face.vertexIds.map((id) => graph.vertices[id])
+    const skeleton = computeStraightSkeleton(polygon)
+    if (!skeleton) continue
+    const faceLegIds = legIdByFaceEdge(face, legsList)
+    const nodes = skeleton.nodes
+      .map((node) => ({ node, legIds: node.tangentEdges.map((i) => faceLegIds[i]) }))
+      .filter((n): n is { node: (typeof skeleton.nodes)[number]; legIds: string[] } => n.legIds.every((id) => id != null))
+    resolvedFaces.push({ faceId: face.id, skeleton, nodes })
+    ridgeMirrors.push(...skeleton.ridges.map((r) => ({ a: r.start, b: r.end })))
+  }
+
+  const tilingVertices = Object.values(graph.vertices).map((v) => ({ id: v.id, x: v.x, y: v.y }))
+  return computeHingeChains(
+    resolvedFaces,
+    prepareMirrors(legMirrors),
+    legIdByMirrorIndex,
+    prepareMirrors(ridgeMirrors),
+    UNIT_SQUARE_BOUNDARY,
+    tilingVertices,
+    hyperparams.tilingMinFeatureSize,
+    hyperparams.tilingMaxHingeBounces,
+    dedupe,
+  )
 }
 
 function flattenPositions(vertexIds: string[], columns: ColumnIndex, vertices: Record<string, TilingVertex>): number[] {
@@ -605,6 +693,7 @@ export async function seedTilingGraph(
     legs,
     constraints: graphConstraints,
     skeletonLocks: [],
+    hingeChainLocks: [],
     dof: 0,
     freeAxes: {},
     nullSpaceBasis: [],
@@ -704,19 +793,80 @@ export function commitBentPath(
 
   const occupiedA = occupiedLegAt(graph.legs, vertexAId, bins, config.legAngleFromA)
   const occupiedB = occupiedLegAt(graph.legs, vertexBId, bins, config.legAngleFromB)
-  if (occupiedA?.kind === 'direct' || occupiedB?.kind === 'direct') {
-    return { error: 'This path overlaps an existing direct path.' }
-  }
-  const mergeTargetA = occupiedA ? otherEndpoint(occupiedA, vertexAId) : null
-  const mergeTargetB = occupiedB ? otherEndpoint(occupiedB, vertexBId) : null
-  if (mergeTargetA && mergeTargetB) {
-    if (mergeTargetA === mergeTargetB) return { error: 'This path already exists.' }
-    return { error: "Can't merge two different junctions in one step." }
-  }
 
   let workingVertices = graph.vertices
+  let workingLegs = graph.legs
+  let sharedSplitVertexId: string | null = null
+
+  // A DIRECT occupant isn't a hard conflict the way an indirect one (below)
+  // is -- a direct leg is just an unbroken straight line, and
+  // `config.bendPoint` landing on it (strictly between its own two
+  // endpoints) is a real point along that same line, not a competing
+  // claim on the direction. Rather than erroring, split it there into two
+  // direct sub-legs through a new vertex at the bend point -- same
+  // "formalize an existing geometric fact" rationale as
+  // `splitDirectLegsThroughNearbyVertices`, just triggered from path
+  // creation instead of the running cleanup pass. Returns the new
+  // (possibly shared, if both A and B split onto the same point) bend
+  // vertex id, or `'blocked'` if the occupant is direct but the bend point
+  // doesn't actually fall on its segment (at/beyond an endpoint, or off
+  // the line) -- that's still a genuine conflict.
+  function splitDirectOccupant(occupied: TilingLeg | undefined, vertexId: string): string | 'blocked' | null {
+    if (!occupied || occupied.kind !== 'direct') return null
+    const farId = otherEndpoint(occupied, vertexId)
+    const a = workingVertices[vertexId]
+    const c = workingVertices[farId]
+    if (!a || !c) return 'blocked'
+    const info = pointToSegmentInfo(config.bendPoint, a, c)
+    if (info.perpDist >= hyperparams.tilingMinFeatureSize || info.t <= 1e-6 || info.t >= 1 - 1e-6) return 'blocked'
+    const bendVertexId = sharedSplitVertexId ?? nanoid()
+    if (!sharedSplitVertexId) {
+      sharedSplitVertexId = bendVertexId
+      workingVertices = {
+        ...workingVertices,
+        [bendVertexId]: { id: bendVertexId, kind: 'intermediate', x: config.bendPoint.x, y: config.bendPoint.y },
+      }
+    }
+    const angle = legAngleAtVertex(occupied, vertexId)
+    workingLegs = { ...workingLegs }
+    delete workingLegs[occupied.id]
+    const legToBend = nanoid()
+    const legFromBend = nanoid()
+    workingLegs[legToBend] = { id: legToBend, kind: 'direct', vertexA: vertexId, vertexB: bendVertexId, angle }
+    workingLegs[legFromBend] = { id: legFromBend, kind: 'direct', vertexA: bendVertexId, vertexB: farId, angle }
+    return bendVertexId
+  }
+
+  const splitA = splitDirectOccupant(occupiedA, vertexAId)
+  const splitB = splitDirectOccupant(occupiedB, vertexBId)
+  if (splitA === 'blocked' || splitB === 'blocked') {
+    return { error: 'This path overlaps an existing direct path.' }
+  }
+
+  const mergeTargetA = splitA ?? (occupiedA ? otherEndpoint(occupiedA, vertexAId) : null)
+  const mergeTargetB = splitB ?? (occupiedB ? otherEndpoint(occupiedB, vertexBId) : null)
+  if (mergeTargetA && mergeTargetB && mergeTargetA !== mergeTargetB) {
+    return { error: "Can't merge two different junctions in one step." }
+  }
+  // A duplicate is only real when BOTH sides already pointed at the same
+  // pre-existing junction -- when they instead both landed there because
+  // `splitDirectOccupant` just split two independent, previously
+  // unconnected direct legs onto the same fresh bend point, that's a
+  // brand-new connection (see the `splitA && splitB` branch below), not a
+  // repeat of one that already existed.
+  if (mergeTargetA && mergeTargetA === mergeTargetB && !splitA && !splitB) {
+    return { error: 'This path already exists.' }
+  }
+
   let newLegs: TilingLeg[]
-  if (mergeTargetA) {
+  if (splitA && splitB) {
+    // Both sides split onto the same shared bend vertex (`splitA ===
+    // splitB` by construction -- `splitDirectOccupant` reuses
+    // `sharedSplitVertexId` on its second call) -- those two splits
+    // already provide both the A-bend and B-bend legs, so the requested
+    // path is fully wired with nothing left to add.
+    newLegs = []
+  } else if (mergeTargetA) {
     newLegs = [{ id: nanoid(), kind: 'indirect', vertexA: vertexBId, vertexB: mergeTargetA, angle: config.legAngleFromB }]
   } else if (mergeTargetB) {
     newLegs = [{ id: nanoid(), kind: 'indirect', vertexA: vertexAId, vertexB: mergeTargetB, angle: config.legAngleFromA }]
@@ -734,10 +884,17 @@ export function commitBentPath(
 
   const vertexIds = Object.keys(workingVertices)
   const columns = buildColumnIndex(vertexIds)
-  const workingGraph: TilingGraphState = { ...graph, vertices: workingVertices }
+  const workingGraph: TilingGraphState = { ...graph, vertices: workingVertices, legs: workingLegs }
   const existingRows = activeRows(workingGraph, tree)
   const newRows = newLegs.map((leg) => legRow(leg.vertexA, leg.vertexB, leg.angle))
-  if (!tryAccept(existingRows, newRows, columns)) {
+  // `newLegs` is empty exactly when both sides split onto the same shared
+  // point above -- nothing new to rank-check (the splits already
+  // formalized an existing geometric fact, same as
+  // `splitDirectLegsThroughNearbyVertices`'s own no-rank-check
+  // precedent). `tryAccept` treats zero new rows as an automatic reject
+  // (its callers never used to pass an empty list), so it's skipped here
+  // rather than misread as "this add would overconstrain the tiling."
+  if (newLegs.length > 0 && !tryAccept(existingRows, newRows, columns)) {
     return { error: 'This path would overconstrain the tiling.' }
   }
 
@@ -745,12 +902,12 @@ export function commitBentPath(
   const solved = solveMinPerturbation([...existingRows, ...newRows], columns, x0)
   const newPositions = unflattenPositions(vertexIds, columns, solved)
 
-  if (segmentCrossesAny(Object.values(graph.legs), newLegs, newPositions)) {
+  if (segmentCrossesAny(Object.values(workingLegs), newLegs, newPositions)) {
     return { error: 'This path crosses an existing path.' }
   }
 
   const vertices = applyPositions(workingVertices, newPositions)
-  const legs = { ...graph.legs }
+  const legs = { ...workingLegs }
   for (const leg of newLegs) legs[leg.id] = leg
   return { graph: finalize({ ...graph, vertices, legs }, tree) }
 }
@@ -803,6 +960,24 @@ function cascadeDeleteLeg(vertices: Record<string, TilingVertex>, legs: Record<s
   }
 }
 
+/** True iff every real graph element a `HingeChainLock` depends on (both
+ * sides' source tangent legs, every crossing's leg/vertex/node anchor, and
+ * the common leg) still exists -- mirrors the `skeletonLocks` filter right
+ * below this function's own callers, so a lock broken by a leg deletion
+ * (directly, or via the intermediate-vertex cascade) is dropped at the same
+ * time rather than left inert for `hingeChainLockRows` to silently no-op on
+ * forever. */
+function hingeChainLockIsLive(lock: HingeChainLock, legs: Record<string, TilingLeg>, vertices: Record<string, TilingVertex>): boolean {
+  const anchorIsLive = (anchor: HingeChainLock['a']['crossings'][number]['anchor']): boolean => {
+    if (anchor.kind === 'leg') return Boolean(legs[anchor.legId])
+    if (anchor.kind === 'vertex') return Boolean(vertices[anchor.vertexId])
+    return anchor.legIds.every((id) => legs[id])
+  }
+  const sideIsLive = (side: HingeChainLock['a']) =>
+    side.sourceLegIds.every((id) => legs[id]) && side.crossings.every((c) => anchorIsLive(c.anchor))
+  return sideIsLive(lock.a) && sideIsLive(lock.b) && Boolean(legs[lock.commonLegId])
+}
+
 /** Deleting a direct leg just drops its row; deleting an indirect leg can
  * cascade -- see `cascadeDeleteLeg`'s doc. */
 export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId: string): TilingGraphState {
@@ -815,10 +990,11 @@ export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId:
   // drop it now rather than leaving it inert for the live-geometry check in
   // `TilingEditorCanvas.tsx` to eventually notice.
   const skeletonLocks = graph.skeletonLocks.filter((lock) => lock.legIds.every((id) => legs[id]))
+  const hingeChainLocks = graph.hingeChainLocks.filter((lock) => hingeChainLockIsLive(lock, legs, vertices))
 
   const vertexIds = Object.keys(vertices)
   const columns = buildColumnIndex(vertexIds)
-  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks }
+  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks, hingeChainLocks }
   const rows = activeRows(nextGraph, tree)
   const x0 = flattenPositions(vertexIds, columns, vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
@@ -1020,7 +1196,8 @@ export function runTilingCleanup(graph: TilingGraphState, tree: TreeState, hyper
   if (!changed) return graph
 
   const skeletonLocks = graph.skeletonLocks.filter((lock) => lock.legIds.every((id) => legs[id]))
-  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks }
+  const hingeChainLocks = graph.hingeChainLocks.filter((lock) => hingeChainLockIsLive(lock, legs, vertices))
+  const nextGraph: TilingGraphState = { ...graph, vertices, legs, skeletonLocks, hingeChainLocks }
   const vertexIds = Object.keys(vertices)
   const columns = buildColumnIndex(vertexIds)
   const rows = activeRows(nextGraph, tree)
@@ -1216,6 +1393,210 @@ export function pruneStaleSkeletonLocks(graph: TilingGraphState, tree: TreeState
   const kept = graph.skeletonLocks.filter((lock) => liveSignatures.has(signatureOf(lock.legIds)))
   if (kept.length === graph.skeletonLocks.length) return graph
   return finalize({ ...graph, skeletonLocks: kept }, tree)
+}
+
+/** Stable identity for one `HingeChainLock`, for matching against a
+ * specific lock the user clicked (`unlockHingeChainLock`) without relying
+ * on object identity, which a round trip through the store wouldn't
+ * preserve. */
+function hingeChainLockSignature(lock: HingeChainLock): string {
+  return `${signatureOf(lock.a.sourceLegIds)}|${signatureOf(lock.b.sourceLegIds)}|${lock.commonLegId}`
+}
+
+/** True iff the EXACT chain identified by `(sourceLegIds, tangentLegId)`
+ * still connects across the lock in `chains` -- either it still crosses
+ * `commonLegId` (the ordinary case), OR it now terminates directly at
+ * `otherSourceLegIds`' own skeleton vertex (the "hinge merge equivalent to
+ * a vertex merge" case: when the two locked sources end up close enough,
+ * each side's OWN hinge can legitimately stop right at the other source
+ * instead of continuing on to the far-away common leg -- e.g. two vertical
+ * hinge chains locked collinear through some shared horizontal leg can
+ * converge so that the lower source's "up" hinge and the upper source's
+ * "down" hinge meet each other directly, becoming one shared chain between
+ * the two sources, while each source's OTHER hinge continues on past it
+ * exactly as before. That's a strictly BETTER outcome than "still reaches
+ * the common leg", not a failure, so it must count as success here too).
+ * Used by both `setHingeChainLock`'s post-solve re-verify and
+ * `pruneStaleTilingHingeChainLocks`'s reactive release. `chains` must be the
+ * RAW, undeduped list (`computeLiveHingeChains(..., false)`): a successful
+ * merge can legitimately make this exact chain and its counterpart become
+ * mutual reverses of each other post-solve, which the deduped list would
+ * collapse to a single surviving id, making a signature-only "does some
+ * chain from this source reach the common leg" check unreliable right when
+ * the lock actually succeeded -- looking up this specific id in the raw
+ * list sidesteps that entirely, since nothing is ever dropped there. */
+function chainReachesCommonLeg(
+  chains: HingeChain[],
+  sourceLegIds: string[],
+  tangentLegId: string,
+  commonLegId: string,
+  otherSourceLegIds: string[],
+): boolean {
+  const sig = signatureOf(sourceLegIds)
+  const otherSig = signatureOf(otherSourceLegIds)
+  const chain = chains.find((c) => c.tangentLegId === tangentLegId && signatureOf(c.sourceLegIds) === sig)
+  if (!chain) return false
+  if (chain.crossings.some((cr) => cr.anchor.kind === 'leg' && cr.anchor.legId === commonLegId)) return true
+  return chain.termination.kind === 'skeletonVertex' && signatureOf(chain.termination.legIds) === otherSig
+}
+
+/**
+ * True iff `a` and `b` are two DIFFERENT skeleton nodes' tangent-leg sets
+ * that are ridge-adjacent -- each has exactly one tangent leg the other
+ * lacks, with everything else shared. This is the standard shape of a
+ * straight-skeleton edge (ridge) between two ordinary nodes: node U's
+ * incircle is tangent to 2 edges shared with its ridge-neighbor V plus one
+ * edge unique to U, and vice versa. Returns the union (a single cotangency
+ * group covering both) when adjacent, `null` otherwise (including when `a`
+ * and `b` are the very same node).
+ */
+function ridgeAdjacentUnion(a: string[], b: string[]): string[] | null {
+  const setA = new Set(a)
+  const setB = new Set(b)
+  const onlyA = a.filter((id) => !setB.has(id))
+  const onlyB = b.filter((id) => !setA.has(id))
+  if (onlyA.length !== 1 || onlyB.length !== 1) return null
+  return Array.from(new Set([...a, ...b]))
+}
+
+/**
+ * The chain-collinearity lock: given two hinge chains (selected by the
+ * user, see `state/store.ts`'s `selectTilingHingeChain`) that share a
+ * common crossed leg, forces them collinear through it -- see
+ * `geometry/hingeChainLock.ts`'s module doc for the underlying math. Single
+ * preview -> verify -> commit function, no separate preview/commit pair,
+ * matching `setSkeletonLock`'s own shape exactly.
+ *
+ * **Ridge-adjacent sources are a special case handled first**: if the two
+ * chains' SOURCE vertices are themselves ridge-adjacent (`ridgeAdjacentUnion`
+ * above), nudging their hinges collinear at some downstream leg is exactly
+ * equivalent to merging the two source vertices into one shared-incircle
+ * point -- the ridge between them is what's actually shrinking to zero, not
+ * some independent crossing further out. In fact for a pair like this,
+ * `findCommonLeg` below routinely can't find any shared crossed leg at all
+ * (each source's "other" hinge heads off in a different direction from the
+ * ridge, away from the other), even though merging the two vertices is
+ * obviously the right, well-behaved operation the user is asking for. This
+ * case is delegated wholesale to `setSkeletonLock` (union of both tangent-
+ * leg sets) -- it's already exactly the right math (a cotangency lock IS a
+ * vertex merge), already handles its own preview/verify/"too far apart"
+ * checks, and already renders as a lock ring with no new UI needed here
+ * (matching the user-visible distinction: a ridge-adjacent merge shows as a
+ * ring around the merged vertex, an ordinary chain lock shows as a thick
+ * connector line).
+ */
+export function setHingeChainLock(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  chainA: HingeChain,
+  chainB: HingeChain,
+): Result<TilingGraphState> {
+  if (signatureOf(chainA.sourceLegIds) !== signatureOf(chainB.sourceLegIds)) {
+    const merged = ridgeAdjacentUnion(chainA.sourceLegIds, chainB.sourceLegIds)
+    if (merged) return setSkeletonLock(graph, tree, merged)
+  }
+
+  const commonLegId = findCommonLeg(chainA, chainB)
+  if (!commonLegId) return { error: "These two hinge chains don't cross a common path leg." }
+
+  // A source with 4+ tangent legs must ALSO be a genuine shared-incircle
+  // vertex for this chain's own math to remain meaningful going forward
+  // (see `geometry/hingeChainLock.ts`'s module doc) -- reuse the existing
+  // skeleton-lock machinery wholesale rather than re-deriving face-finding
+  // and entry-vertex orientation here; this is also exactly what makes the
+  // lock ring + Inspector unlock button appear for these sources with no
+  // new UI code.
+  let current = graph
+  for (const sourceLegIds of [chainA.sourceLegIds, chainB.sourceLegIds]) {
+    if (sourceLegIds.length < 4) continue
+    const locked = setSkeletonLock(current, tree, sourceLegIds)
+    if ('error' in locked) return locked
+    current = locked.graph
+  }
+
+  const built = buildHingeChainConstraint(chainA, chainB, commonLegId, current)
+  if ('error' in built) return built
+
+  const vertexIds = Object.keys(current.vertices)
+  const columns = buildColumnIndex(vertexIds)
+  const existingRows = activeRows(current, tree)
+  if (!tryAccept(existingRows, [built.row], columns)) {
+    return { error: 'Locking this connection would overconstrain the tiling.' }
+  }
+  const x0 = flattenPositions(vertexIds, columns, current.vertices)
+  const solved = solveMinPerturbation([...existingRows, built.row], columns, x0)
+  const vertices = applyPositions(current.vertices, unflattenPositions(vertexIds, columns, solved))
+
+  // Same rationale as `setSkeletonLock`'s own re-verify: the linear row
+  // alone can't distinguish "a small, sensible snap" from "these hinges
+  // were too far apart, so least-squares reached for whatever satisfies
+  // the equation regardless of distance" -- recomputing the real chains on
+  // the solved positions and confirming both still reach `commonLegId` is
+  // the only way to tell those apart.
+  const liveChains = computeLiveHingeChains({ ...current, vertices }, hyperparams, false)
+  const stillReaches =
+    chainReachesCommonLeg(liveChains, chainA.sourceLegIds, chainA.tangentLegId, commonLegId, chainB.sourceLegIds) &&
+    chainReachesCommonLeg(liveChains, chainB.sourceLegIds, chainB.tangentLegId, commonLegId, chainA.sourceLegIds)
+  if (!stillReaches) {
+    return { error: 'These hinges are too far apart to connect -- try moving them closer first.' }
+  }
+
+  const sideLock = (chain: HingeChain): HingeChainLock['a'] => {
+    // Include the common-leg crossing itself (`idx + 1`, not `idx`) --
+    // `geometry/hingeChainLock.ts`'s `walkToCommonLeg` re-derives this row
+    // fresh on every `finalize` (see `hingeChainLockRows`) by searching
+    // `crossings` for `commonLegId`; excluding that exact crossing would
+    // make every future re-derivation fail to find it and silently drop
+    // this lock's row from the constraint set -- the position solve at
+    // creation time still looks correct (it uses the live, untruncated
+    // chain directly, not this persisted copy), but the null space would
+    // never actually incorporate the constraint, letting a later drag walk
+    // right off it despite the crease having snapped correctly moments
+    // earlier.
+    const idx = chain.crossings.findIndex((c) => c.anchor.kind === 'leg' && c.anchor.legId === commonLegId)
+    return {
+      sourceLegIds: chain.sourceLegIds,
+      sourceTangentAngles: chain.sourceTangentAngles,
+      tangentLegId: chain.tangentLegId,
+      initialAngle: chain.initialAngle,
+      crossings: chain.crossings.slice(0, idx + 1),
+    }
+  }
+  const newLock: HingeChainLock = { a: sideLock(chainA), b: sideLock(chainB), commonLegId }
+  return { graph: finalize({ ...current, vertices, hingeChainLocks: [...current.hingeChainLocks, newLock] }, tree) }
+}
+
+/** Drops the lock matching `lock` exactly -- no re-solve needed, dropping a
+ * constraint can only loosen the null space (same reasoning as
+ * `unlockSkeletonVertex`). */
+export function unlockHingeChainLock(graph: TilingGraphState, tree: TreeState, lock: HingeChainLock): TilingGraphState {
+  const sig = hingeChainLockSignature(lock)
+  const hingeChainLocks = graph.hingeChainLocks.filter((l) => hingeChainLockSignature(l) !== sig)
+  return finalize({ ...graph, hingeChainLocks }, tree)
+}
+
+/** Reactive release of any `HingeChainLock` whose live geometry has broken
+ * -- either side's source no longer reaching the common leg (the general
+ * "if the source vertices are lost... or something else weird happens, the
+ * constraint is released" case; a deleted leg is instead caught immediately
+ * by `deleteTilingLeg`'s own cascade via `hingeChainLockIsLive`). Unlike
+ * `pruneStaleSkeletonLocks` (which takes the canvas's already-computed
+ * `liveSignatures` to avoid a redundant per-render recompute), this
+ * recomputes the live chains itself -- it's called only once per mouseup
+ * (see `state/store.ts`), not once per render, so the extra recompute is
+ * cheap by comparison. Returns `graph` unchanged (same reference) when
+ * nothing needs dropping. */
+export function pruneStaleTilingHingeChainLocks(graph: TilingGraphState, tree: TreeState, hyperparams: HyperparamsState): TilingGraphState {
+  if (graph.hingeChainLocks.length === 0) return graph
+  const liveChains = computeLiveHingeChains(graph, hyperparams, false)
+  const kept = graph.hingeChainLocks.filter(
+    (lock) =>
+      chainReachesCommonLeg(liveChains, lock.a.sourceLegIds, lock.a.tangentLegId, lock.commonLegId, lock.b.sourceLegIds) &&
+      chainReachesCommonLeg(liveChains, lock.b.sourceLegIds, lock.b.tangentLegId, lock.commonLegId, lock.a.sourceLegIds),
+  )
+  if (kept.length === graph.hingeChainLocks.length) return graph
+  return finalize({ ...graph, hingeChainLocks: kept }, tree)
 }
 
 /** Applies a drag of `vertexId` toward `desiredPosition` as a linear

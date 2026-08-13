@@ -469,10 +469,34 @@ export function computeStraightSkeleton(polygon: Point[]): StraightSkeletonResul
   return { ridges, nodes: mergeCoincidentNodes(nodes), edges }
 }
 
+/** True iff edges `i` and `j` are consecutive (share a polygon vertex) and
+ * that shared vertex is reflex/concave -- same test as `isReflex`, just
+ * driven by two edge indices instead of a live `WVertex`, since a node's
+ * `tangentEdges` only has the indices, not the wavefront vertex that
+ * originally joined them. */
+function isConcaveEdgePair(edges: OriginalEdge[], i: number, j: number): boolean {
+  const n = edges.length
+  if ((i + 1) % n === j) return crossZ(edges[i].dir, edges[j].dir) < -EPS_ANGLE
+  if ((j + 1) % n === i) return crossZ(edges[j].dir, edges[i].dir) < -EPS_ANGLE
+  return false
+}
+
 export function computeHinges(nodes: SkeletonNode[], edges: OriginalEdge[]): Hinge[] {
   const hinges: Hinge[] = []
   for (const node of nodes) {
+    // A node tangent to two edges that meet at a concave (reflex) polygon
+    // vertex sits in the "notch" of that bend -- a hinge ray toward either
+    // of those two sides would fold across a corner the paper doesn't
+    // actually crease along, so both are skipped (any third tangent edge,
+    // from a generic 3-tangency node, is unaffected).
+    const concaveSides = new Set<number>()
+    for (const i of node.tangentEdges) {
+      for (const j of node.tangentEdges) {
+        if (i !== j && isConcaveEdgePair(edges, i, j)) concaveSides.add(i)
+      }
+    }
     for (const edgeIndex of node.tangentEdges) {
+      if (concaveSides.has(edgeIndex)) continue
       const e = edges[edgeIndex]
       const abx = e.b.x - e.a.x
       const aby = e.b.y - e.a.y

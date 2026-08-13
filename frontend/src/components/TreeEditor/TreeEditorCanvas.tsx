@@ -28,6 +28,37 @@ export function TreeEditorCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The tree pane can be collapsed and reopened (`App.tsx`'s `paneOpen`),
+  // which unmounts and remounts this whole canvas while its `.pane`
+  // ancestor is still animating its own open-width CSS transition (see
+  // App.css's `.pane` `flex-grow`/`flex-basis` transition, 220ms) -- the
+  // synchronous read above can catch a too-narrow, mid-transition size.
+  // `initializeBase` is safe to call repeatedly (see its own doc), so this
+  // keeps re-measuring for a window comfortably longer than that
+  // transition and settles on the true final size once it ends. Bounded
+  // to that window (rather than observing indefinitely) on purpose: this
+  // exists only to correct a transient mid-mount misread, not to
+  // re-baseline the tree's whole coordinate system (and silently shift
+  // already-placed nodes out of view) every time some LATER, unrelated
+  // layout change -- e.g. opening another pane -- happens to resize this
+  // one long after mount.
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect
+      if (!rect) return
+      pan.initializeBase(rect.width, rect.height)
+    })
+    observer.observe(svg)
+    const settleTimeout = window.setTimeout(() => observer.disconnect(), 500)
+    return () => {
+      window.clearTimeout(settleTimeout)
+      observer.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null

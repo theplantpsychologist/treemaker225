@@ -3,6 +3,7 @@ import type { CornerId, EdgeSide, LeafConstraint } from '../../types/constraints
 import { NO_LEAF_CONSTRAINT } from '../../types/constraints'
 import { isFullyFixedBySymmetryBoundary } from '../../geometry/constraintResolution'
 import { signatureOf } from '../../geometry/tilingCotangent'
+import type { ChainTermination, HingeChain } from '../../geometry/hingeChains'
 import { IconButton } from '../icons/IconButton'
 import pinSymmetryIcon from '../../assets/pin_symmetry.svg'
 import lockIcon from '../../assets/lock.svg'
@@ -39,6 +40,13 @@ function boundaryLabel(constraint: LeafConstraint) {
   return 'none'
 }
 
+function terminationLabel(t: ChainTermination): string {
+  if (t.kind === 'vertex') return `flap/junction ${t.vertexId.slice(0, 6)}`
+  if (t.kind === 'skeletonVertex') return `incircle vertex (${t.legIds.length} edges)`
+  if (t.kind === 'boundary') return 'paper edge'
+  return 'incomplete (hit the bounce cap)'
+}
+
 /** Mirrors `PackingEditor/Inspector.tsx`'s rail/panel/group structure for
  * the manual tiling editor: a selected vertex shows its (independently
  * copied, see `TilingGraphState.constraints`) symmetry/boundary/lock
@@ -47,11 +55,21 @@ function boundaryLabel(constraint: LeafConstraint) {
  * arm-then-click-a-canvas-handle flow, unlike packing's Inspector -- there's
  * only 4 of each, so a compact button row here is simpler than adding a
  * second canvas overlay). */
-export function TilingInspector() {
+/** `selectedHingeChains` -- the live `HingeChain` objects matching
+ * `tilingSelectedChainIds` -- is passed down from `TilingEditorCanvas.tsx`
+ * rather than read from the store: hinge chains are recomputed fresh every
+ * render there (so they stay visually live while dragging without a store
+ * write, see that file's doc), so this is the only component that has them
+ * on hand. May be shorter than `tilingSelectedChainIds` for a render or two
+ * right after a topology change invalidates one of the selected ids. */
+export function TilingInspector({ selectedHingeChains }: { selectedHingeChains: HingeChain[] }) {
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
   const tilingSkeletonSelection = useAppStore((s) => s.tilingSkeletonSelection)
+  const tilingSelectedChainIds = useAppStore((s) => s.tilingSelectedChainIds)
+  const tilingSelectedHingeChainLock = useAppStore((s) => s.tilingSelectedHingeChainLock)
+  const releaseHingeChainLock = useAppStore((s) => s.releaseHingeChainLock)
   const lockTilingSkeletonVertex = useAppStore((s) => s.lockTilingSkeletonVertex)
   const unlockTilingSkeletonVertex = useAppStore((s) => s.unlockTilingSkeletonVertex)
   const mergeTilingSkeletonVertices = useAppStore((s) => s.mergeTilingSkeletonVertices)
@@ -105,6 +123,51 @@ export function TilingInspector() {
           <button className="inspector-text-button" onClick={() => mergeTilingSkeletonVertices(legIdsA, legIdsB)}>
             Merge
           </button>
+        </div>
+      </div>
+    )
+  }
+
+  // A selected, already-committed chain-collinearity lock -- checked before
+  // the plain single-chain view-only branch below since the two selection
+  // fields are mutually exclusive by construction (see
+  // `tilingSelectedHingeChainLock`'s doc in `state/store.ts`).
+  if (tilingSelectedHingeChainLock) {
+    const lock = tilingSelectedHingeChainLock
+    return (
+      <div className="inspector-rail">
+        <div className="inspector-panel">
+          <div className="inspector-panel-header">
+            <span className="inspector-label">chain collinearity lock</span>
+            <IconButton icon={clearIcon} label="Deselect" onClick={clearTilingSelection} />
+          </div>
+          <span className="inspector-width">{lock.a.sourceLegIds.length}-edge and {lock.b.sourceLegIds.length}-edge incircle vertices, connected</span>
+          <button className="inspector-text-button" onClick={() => releaseHingeChainLock(lock)}>
+            Release constraint
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // A single selected hinge chain -- view-only, no operations (per the
+  // manual editor's spec: chains are a read-only diagnostic until two of
+  // them are selected, which attempts the chain-collinearity lock instead
+  // of showing anything here -- see `TilingEditorCanvas.tsx`).
+  if (tilingSelectedChainIds.length === 1) {
+    const chain = selectedHingeChains[0]
+    if (!chain) return null
+    const legCrossingCount = chain.crossings.filter((c) => c.anchor.kind === 'leg').length
+    return (
+      <div className="inspector-rail">
+        <div className="inspector-panel">
+          <div className="inspector-panel-header">
+            <span className="inspector-label">hinge chain</span>
+            <IconButton icon={clearIcon} label="Deselect" onClick={clearTilingSelection} />
+          </div>
+          <span className="inspector-width">source: {chain.sourceLegIds.length}-edge incircle vertex</span>
+          <span className="inspector-width">crosses {legCrossingCount} path leg{legCrossingCount === 1 ? '' : 's'}</span>
+          <span className="inspector-width">ends at: {terminationLabel(chain.termination)}</span>
         </div>
       </div>
     )

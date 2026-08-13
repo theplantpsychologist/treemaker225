@@ -51,7 +51,12 @@ interface PanState {
 export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: ViewBox) {
   const [viewBox, setViewBox] = useState<ViewBox>(initial)
   const baseRef = useRef<ViewBox>(initial)
-  const initializedRef = useRef(false)
+  /** True once the user has actually panned or zoomed -- read/written only
+   * from plain event-handler code (never inside a `setState` updater; see
+   * `initializeBase`'s doc for why that distinction matters), so it's a
+   * safe, StrictMode-double-invocation-proof way to gate "is it still
+   * safe to auto-correct the base viewBox". */
+  const interactedRef = useRef(false)
   const panState = useRef<PanState | null>(null)
   const [renderedWidthPx, setRenderedWidthPx] = useState(0)
 
@@ -74,12 +79,29 @@ export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initi
     return () => observer.disconnect()
   }, [svgRef])
 
-  /** For canvases with no fixed logical coordinate space (the tree editor),
-   * call once on mount with the SVG's actual rendered pixel box so world
-   * units start out matching CSS pixels 1:1, as they did before pan/zoom. */
+  /** For canvases with no fixed logical coordinate space (the tree editor):
+   * (re-)establishes the base viewBox from the SVG's actual rendered pixel
+   * box, so world units start out matching CSS pixels 1:1, as they did
+   * before pan/zoom. Safe to call repeatedly -- a correction only ever
+   * applies until `interactedRef` flips (the user's first real pan/zoom),
+   * so later calls never clobber real interaction. Deliberately gated on
+   * that plain ref rather than comparing `viewBox` to `baseRef` from
+   * *inside* the `setViewBox` updater: React (in dev + StrictMode)
+   * double-invokes updater functions to catch impure ones, and an updater
+   * that mutates `baseRef` as a side effect desyncs on the second,
+   * discarded invocation -- silently freezing the correction after its
+   * first successful call. This matters because the tree pane can be
+   * collapsed and reopened (see `App.tsx`'s `paneOpen`), which fully
+   * unmounts and remounts this canvas while its `.pane` ancestor is still
+   * mid-way through its own `flex-grow`/`flex-basis` CSS transition -- a
+   * single one-shot read at mount (the old behavior) could freeze in a
+   * too-narrow, mid-transition width as the permanent coordinate
+   * baseline. `TreeEditorCanvas` re-invokes this from a `ResizeObserver`
+   * so it keeps correcting itself across that transition and settles on
+   * the true final size once the animation ends, with no need to know the
+   * transition's duration or listen for its end. */
   const initializeBase = useCallback((w: number, h: number) => {
-    if (initializedRef.current || w <= 0 || h <= 0) return
-    initializedRef.current = true
+    if (interactedRef.current || w <= 0 || h <= 0) return
     const vb = { x: 0, y: 0, w, h }
     baseRef.current = vb
     setViewBox(vb)
@@ -120,6 +142,7 @@ export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initi
       if (!ps.dragging) {
         if (Math.hypot(dxClient, dyClient) < PAN_CLICK_THRESHOLD) return
         ps.dragging = true
+        interactedRef.current = true
       }
       const rect = svg.getBoundingClientRect()
       if (rect.width === 0 || rect.height === 0) return
@@ -150,6 +173,7 @@ export function useViewBoxPanZoom(svgRef: RefObject<SVGSVGElement | null>, initi
     if (!svg) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      interactedRef.current = true
       const pt = svg.createSVGPoint()
       pt.x = e.clientX
       pt.y = e.clientY

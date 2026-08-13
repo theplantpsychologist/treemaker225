@@ -22,12 +22,17 @@ import {
   previewPathCandidates,
   projectVertexDrag,
   pruneStaleSkeletonLocks,
+  pruneStaleTilingHingeChainLocks,
   runTilingCleanup as runTilingCleanupAction,
   seedTilingGraph as seedTilingGraphAction,
+  setHingeChainLock,
   setSkeletonLock,
   toggleTilingVertexLock as toggleTilingVertexLockAction,
+  unlockHingeChainLock,
   unlockSkeletonVertex,
 } from './actions/tilingGraphActions'
+import type { HingeChain } from '../geometry/hingeChains'
+import type { HingeChainLock } from '../types/tilingGraph'
 import { backfillMissingPositions, computeNaiveInitialization, naiveScale } from '../geometry/naiveInit'
 import {
   collectResolvedPoints,
@@ -137,6 +142,23 @@ interface AppState {
    * selector clears the others). See `geometry/tilingCotangent.ts`'s
    * `signatureOf` for how a leg-id set becomes a stable identity. */
   tilingSkeletonSelection: { kind: 'vertex'; legIds: string[] } | { kind: 'ridge'; legIdsA: string[]; legIdsB: string[] } | null
+  /** 0, 1, or 2 hinge chain ids (see `geometry/hingeChains.ts`'s `HingeChain.id`)
+   * -- same replace/add-2nd/swap click semantics as `tilingSelectedVertexIds`,
+   * and likewise mutually exclusive with every other selection field above
+   * (every selector clears the others). Reaching 2 attempts the chain-
+   * collinearity lock (`setHingeChainLock`) immediately -- no candidate
+   * picker, since it's a single deterministic attempt, not a multi-option
+   * choice. */
+  tilingSelectedChainIds: string[]
+  /** A selected, already-committed chain-collinearity lock (clicked via its
+   * own wider "fused" polyline in the canvas) -- mutually exclusive with
+   * every selection field above. Kept as the lock object itself (not just
+   * an index) since that's all `releaseHingeChainLock` needs and locks
+   * have no other stable id. Deliberately distinct from
+   * `tilingSelectedChainIds` reaching 2 -- reusing that would re-trigger
+   * `attemptHingeChainLock` on an already-locked pair, which would just
+   * fail with an overconstrain error (the row's already active). */
+  tilingSelectedHingeChainLock: HingeChainLock | null
   tilingError: string | null
   /** True while `seedTilingGraph`'s one best-effort network call is in
    * flight -- separate from the packing-solve `solving` flag so seeding
@@ -214,10 +236,15 @@ interface AppState {
   toggleTilingVertexLock: (flapId: string) => void
   selectTilingSkeletonVertex: (legIds: string[]) => void
   selectTilingSkeletonRidge: (legIdsA: string[], legIdsB: string[]) => void
+  selectTilingHingeChain: (chainId: string, additive: boolean) => void
+  attemptHingeChainLock: (chainA: HingeChain, chainB: HingeChain) => void
+  selectTilingHingeChainLock: (lock: HingeChainLock) => void
+  releaseHingeChainLock: (lock: HingeChainLock) => void
   lockTilingSkeletonVertex: (legIds: string[]) => void
   unlockTilingSkeletonVertex: (legIds: string[]) => void
   mergeTilingSkeletonVertices: (legIdsA: string[], legIdsB: string[]) => void
   pruneStaleTilingSkeletonLocks: (liveSignatures: Set<string>) => void
+  pruneStaleHingeChainLocks: () => void
   clearTilingError: () => void
   dragTilingVertexStart: () => void
   dragTilingVertexTo: (vertexId: string, x: number, y: number) => void
@@ -253,6 +280,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   tilingPathCandidates: null,
   tilingSelectedLegId: null,
   tilingSkeletonSelection: null,
+  tilingSelectedChainIds: [],
+  tilingSelectedHingeChainLock: null,
   tilingError: null,
   tilingSeeding: false,
   paneOpen: DEFAULT_PANE_OPEN,
@@ -285,6 +314,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
       tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
       tilingError: null,
     })
   },
@@ -307,6 +338,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
       tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
       tilingError: null,
     })
   },
@@ -331,6 +364,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
       tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
       tilingError: null,
       undoStack,
       redoStack: [],
@@ -828,6 +863,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
       tilingError: null,
       tilingSeeding: false,
       // The workflow's next step lives in the tiling pane -- collapse the
@@ -851,6 +888,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         tilingPathCandidates: null,
         tilingSelectedLegId: null,
         tilingSkeletonSelection: null,
+        tilingSelectedChainIds: [],
+        tilingSelectedHingeChainLock: null,
         tilingError: null,
       })
       return
@@ -859,12 +898,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextIds =
       tilingSelectedVertexIds.length >= 2 ? [tilingSelectedVertexIds[1], vertexId] : [...tilingSelectedVertexIds, vertexId]
     if (nextIds.length !== 2) {
-      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null, tilingSkeletonSelection: null })
+      set({
+        tilingSelectedVertexIds: nextIds,
+        tilingPathCandidates: null,
+        tilingSelectedLegId: null,
+        tilingSkeletonSelection: null,
+        tilingSelectedChainIds: [],
+        tilingSelectedHingeChainLock: null,
+      })
       return
     }
     const preview = previewPathCandidates(tilingGraph, state.hyperparams, nextIds[0], nextIds[1])
     if ('error' in preview) {
-      set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: preview.error })
+      set({
+        tilingSelectedVertexIds: nextIds,
+        tilingPathCandidates: null,
+        tilingSelectedLegId: null,
+        tilingSelectedChainIds: [],
+        tilingSelectedHingeChainLock: null,
+        tilingError: preview.error,
+      })
       return
     }
     const { options } = preview.candidates
@@ -876,14 +929,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (options.length === 1 && options[0].kind === 'direct') {
       const result = commitPathOption(tilingGraph, state.tree, state.hyperparams, nextIds[0], nextIds[1], options[0])
       if ('error' in result) {
-        set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: result.error })
+        set({
+          tilingSelectedVertexIds: [],
+          tilingPathCandidates: null,
+          tilingSelectedLegId: null,
+          tilingSelectedChainIds: [],
+          tilingSelectedHingeChainLock: null,
+          tilingError: result.error,
+        })
         return
       }
       get().pushUndoSnapshot()
-      set({ tilingGraph: result.graph, tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingError: null })
+      set({
+        tilingGraph: result.graph,
+        tilingSelectedVertexIds: [],
+        tilingPathCandidates: null,
+        tilingSelectedLegId: null,
+        tilingSelectedChainIds: [],
+        tilingSelectedHingeChainLock: null,
+        tilingError: null,
+      })
       return
     }
-    set({ tilingSelectedVertexIds: nextIds, tilingPathCandidates: preview.candidates, tilingSelectedLegId: null, tilingError: null })
+    set({
+      tilingSelectedVertexIds: nextIds,
+      tilingPathCandidates: preview.candidates,
+      tilingSelectedLegId: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
+      tilingError: null,
+    })
   },
 
   chooseTilingPathOption: (index) => {
@@ -909,10 +984,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearTilingSelection: () =>
-    set({ tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSelectedLegId: null, tilingSkeletonSelection: null }),
+    set({
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSelectedLegId: null,
+      tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
+    }),
 
   selectTilingLeg: (legId) =>
-    set({ tilingSelectedLegId: legId, tilingSelectedVertexIds: [], tilingPathCandidates: null, tilingSkeletonSelection: null }),
+    set({
+      tilingSelectedLegId: legId,
+      tilingSelectedVertexIds: [],
+      tilingPathCandidates: null,
+      tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
+    }),
 
   deleteSelectedTilingLeg: () => {
     const state = get()
@@ -995,6 +1084,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingSelectedLegId: null,
       tilingPathCandidates: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
     }),
 
   selectTilingSkeletonRidge: (legIdsA, legIdsB) =>
@@ -1003,7 +1094,87 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingSelectedVertexIds: [],
       tilingSelectedLegId: null,
       tilingPathCandidates: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
     }),
+
+  /** Click dispatcher for a hinge chain -- same replace/add-2nd/swap
+   * semantics as `selectTilingVertex`. Only manages the selection itself;
+   * reaching 2 ids is picked up reactively by `TilingEditorCanvas.tsx`
+   * (the only place with the live `HingeChain` objects a chain id alone
+   * doesn't carry -- see that file's doc), which calls
+   * `attemptHingeChainLock` with the two resolved chains. */
+  selectTilingHingeChain: (chainId, additive) => {
+    const state = get()
+    const { tilingSelectedChainIds } = state
+    if (!state.tilingGraph) return
+    if (!additive || tilingSelectedChainIds.length === 0) {
+      set({
+        tilingSelectedChainIds: [chainId],
+        tilingSelectedVertexIds: [],
+        tilingSelectedLegId: null,
+        tilingPathCandidates: null,
+        tilingSkeletonSelection: null,
+        tilingSelectedHingeChainLock: null,
+        tilingError: null,
+      })
+      return
+    }
+    if (tilingSelectedChainIds.includes(chainId)) return
+    const nextIds =
+      tilingSelectedChainIds.length >= 2 ? [tilingSelectedChainIds[1], chainId] : [...tilingSelectedChainIds, chainId]
+    set({
+      tilingSelectedChainIds: nextIds,
+      tilingSelectedVertexIds: [],
+      tilingSelectedLegId: null,
+      tilingPathCandidates: null,
+      tilingSkeletonSelection: null,
+      tilingSelectedHingeChainLock: null,
+      tilingError: null,
+    })
+  },
+
+  /** Click dispatcher for an already-committed chain-collinearity lock's
+   * own rendered connector line -- distinct from `selectTilingHingeChain`
+   * (see `tilingSelectedHingeChainLock`'s doc for why they can't share a
+   * field). */
+  selectTilingHingeChainLock: (lock) =>
+    set({
+      tilingSelectedHingeChainLock: lock,
+      tilingSelectedVertexIds: [],
+      tilingSelectedLegId: null,
+      tilingPathCandidates: null,
+      tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+    }),
+
+  /** Called once, reactively, the moment `tilingSelectedChainIds` reaches 2
+   * resolvable chains (see `TilingEditorCanvas.tsx`) -- a single automatic
+   * attempt, not a candidate picker (there's only ever one deterministic
+   * outcome: success or a specific error, never several options to choose
+   * between). Clears the chain selection either way, so the canvas's own
+   * effect naturally stops re-triggering (its guard is `length === 2`). */
+  attemptHingeChainLock: (chainA, chainB) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const result = setHingeChainLock(state.tilingGraph, state.tree, state.hyperparams, chainA, chainB)
+    if ('error' in result) {
+      set({ tilingError: result.error, tilingSelectedChainIds: [] })
+      return
+    }
+    get().pushUndoSnapshot()
+    set({ tilingGraph: result.graph, tilingSelectedChainIds: [], tilingError: null })
+  },
+
+  /** Drops a chain-collinearity lock, matched by `lock`'s own identity (see
+   * `unlockHingeChainLock`'s doc) -- no re-solve needed, same reasoning as
+   * `unlockSkeletonVertex`. */
+  releaseHingeChainLock: (lock) => {
+    const state = get()
+    if (!state.tilingGraph) return
+    get().pushUndoSnapshot()
+    set({ tilingGraph: unlockHingeChainLock(state.tilingGraph, state.tree, lock), tilingSelectedHingeChainLock: null })
+  },
 
   lockTilingSkeletonVertex: (legIds) => {
     const state = get()
@@ -1053,6 +1224,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const stillSelected =
       state.tilingSkeletonSelection?.kind === 'vertex' && liveSignatures.has(signatureOf(state.tilingSkeletonSelection.legIds))
     set({ tilingGraph: pruned, tilingSkeletonSelection: stillSelected ? state.tilingSkeletonSelection : null })
+  },
+
+  /** Mouseup-gated release of any `HingeChainLock` whose live geometry has
+   * broken -- unlike `pruneStaleTilingSkeletonLocks` above (reactive on
+   * every render, fed the canvas's already-computed signatures), this is a
+   * pure function over `tilingGraph` alone (it recomputes the live chains
+   * itself -- see `pruneStaleTilingHingeChainLocks`'s doc) and is called
+   * only once per pointerup by `useTilingEditorInteraction.ts`, not once
+   * per drag frame. No undo snapshot -- passive automatic correction, same
+   * reasoning as `runTilingCleanup`. */
+  pruneStaleHingeChainLocks: () => {
+    const state = get()
+    if (!state.tilingGraph) return
+    const pruned = pruneStaleTilingHingeChainLocks(state.tilingGraph, state.tree, state.hyperparams)
+    if (pruned === state.tilingGraph) return
+    set({ tilingGraph: pruned })
   },
 
   clearTilingError: () => set({ tilingError: null }),
@@ -1128,7 +1315,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     // (possibly hand-edited, or re-canonicalized) tree it's paired with --
     // see `isTilingGraphConsistentWithTree`'s doc.
     const tilingGraph =
-      session.tilingGraph && isTilingGraphConsistentWithTree(session.tilingGraph, tree) ? session.tilingGraph : null
+      session.tilingGraph && isTilingGraphConsistentWithTree(session.tilingGraph, tree)
+        ? // Defensive: a session exported before `hingeChainLocks` existed
+          // has no such field at all -- default it rather than let
+          // downstream code (`hingeChainLockRows`, its stale-lock pruning)
+          // crash iterating `undefined`.
+          { ...session.tilingGraph, hingeChainLocks: session.tilingGraph.hingeChainLocks ?? [] }
+        : null
     get().pushUndoSnapshot()
     set({
       tree,
@@ -1148,6 +1341,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tilingPathCandidates: null,
       tilingSelectedLegId: null,
       tilingSkeletonSelection: null,
+      tilingSelectedChainIds: [],
+      tilingSelectedHingeChainLock: null,
       tilingError: null,
       paneOpen: { tree: true, packing: Boolean(packing), tiling: Boolean(tilingGraph), output: false },
     })

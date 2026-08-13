@@ -33,6 +33,7 @@ export function useTilingEditorInteraction(svgRef: RefObject<SVGSVGElement | nul
   const dragTilingVertexStart = useAppStore((s) => s.dragTilingVertexStart)
   const dragTilingVertexTo = useAppStore((s) => s.dragTilingVertexTo)
   const runTilingCleanup = useAppStore((s) => s.runTilingCleanup)
+  const pruneStaleHingeChainLocks = useAppStore((s) => s.pruneStaleHingeChainLocks)
 
   const dragState = useRef<DragState | null>(null)
 
@@ -100,7 +101,12 @@ export function useTilingEditorInteraction(svgRef: RefObject<SVGSVGElement | nul
     // plain click is a cheap no-op fast path -- see `runTilingCleanup`'s
     // own doc for why nothing moved means nothing to clean).
     runTilingCleanup()
-  }, [selectTilingVertex, runTilingCleanup])
+    // Same mouseup-only cadence for hinge-chain locks -- see
+    // `pruneStaleTilingHingeChainLocks`'s doc for why this recomputes the
+    // live chains itself rather than reacting to every render like
+    // `pruneStaleTilingSkeletonLocks` does.
+    pruneStaleHingeChainLocks()
+  }, [selectTilingVertex, runTilingCleanup, pruneStaleHingeChainLocks])
 
   return { beginVertexPointerDown, onLegPointerDown, onPointerMove, onPointerUp }
 }

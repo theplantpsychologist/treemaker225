@@ -1,24 +1,27 @@
 import { useAppStore } from '../../state/store'
 import './TilingToolbar.css'
 
-/** Toggle + hint/error strip for the tiling pane -- the "Seed tiling" action
+/** Toggle + hint strip for the tiling pane -- the "Seed tiling" action
  * itself now lives in the packing pane (`SeedTilingButton.tsx`), one step
  * earlier in the workflow. The show/hide toggle stays available as soon as
- * there's a packing to draw flaps/rivers from (even before a tiling graph
- * exists); the rest renders nothing once there's neither a graph to hint
- * about nor an error to show. */
+ * there's a packing to draw flaps/rivers from; the rest renders nothing once
+ * there's no graph to hint about. `tilingError` is rendered by `App.tsx` as
+ * an absolutely-positioned overlay inside `.pane-body` (like the tree pane's
+ * own error banner) rather than here -- this toolbar sits in normal flex
+ * flow above the canvas, so mounting/unmounting an error div here would
+ * reflow (resize/shift) the canvas underneath every time an operation
+ * failed, which reads as jarring layout jank for an error that's frequent
+ * (e.g. every rejected hinge-chain-lock attempt). */
 export function TilingToolbar() {
   const packing = useAppStore((s) => s.packing)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
   const tilingSelectedVertexIds = useAppStore((s) => s.tilingSelectedVertexIds)
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
   const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
-  const tilingError = useAppStore((s) => s.tilingError)
-  const clearTilingError = useAppStore((s) => s.clearTilingError)
   const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
   const setShowTilingFlapsAndRivers = useAppStore((s) => s.setShowTilingFlapsAndRivers)
 
-  if (!packing && !tilingError) return null
+  if (!packing) return null
 
   return (
     <div className="tiling-toolbar">
@@ -46,14 +49,6 @@ export function TilingToolbar() {
             !tilingSelectedLegId &&
             'Click a vertex to inspect it, or shift-click two vertices to connect them.'}
           {tilingSelectedLegId && 'Path selected -- use the inspector to delete it.'}
-        </div>
-      )}
-      {tilingError && (
-        <div className="solve-error">
-          {tilingError}
-          <button className="dismiss-error" onClick={clearTilingError}>
-            ×
-          </button>
         </div>
       )}
     </div>

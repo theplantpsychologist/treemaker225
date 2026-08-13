@@ -50,6 +50,8 @@ interface DividerDrag {
 function App() {
   const uiError = useAppStore((s) => s.uiError)
   const clearUiError = useAppStore((s) => s.clearUiError)
+  const tilingError = useAppStore((s) => s.tilingError)
+  const clearTilingError = useAppStore((s) => s.clearTilingError)
   const shape = useAppStore((s) => s.hyperparams.shape)
   const undo = useAppStore((s) => s.undo)
   const redo = useAppStore((s) => s.redo)
@@ -155,6 +157,16 @@ function App() {
           toolbar: <TilingToolbar />,
           body: (
             <>
+              {tilingError && (
+                <div className="pane-status-stack">
+                  <div className="solve-error">
+                    {tilingError}
+                    <button className="dismiss-error" onClick={clearTilingError}>
+                      ×
+                    </button>
+                  </div>
+                </div>
+              )}
               <TilingEditorCanvas />
               <RenderCreasePatternButton />
             </>

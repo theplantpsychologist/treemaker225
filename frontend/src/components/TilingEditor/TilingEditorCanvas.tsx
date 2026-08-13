@@ -4,11 +4,11 @@ import { useAppStore } from '../../state/store'
 import { buildShapePoints, extraRotationFor } from '../../geometry/shapes'
 import { computeRiverBands, ringsToPathD } from '../../geometry/rivers'
 import { computeFaces } from '../../geometry/planarFaces'
-import { computeHinges, computeStraightSkeleton } from '../../geometry/straightSkeleton'
+import { computeStraightSkeleton } from '../../geometry/straightSkeleton'
 import { signatureOf } from '../../geometry/tilingCotangent'
-import { castHingeRay, prepareMirrors } from '../../geometry/hingeRayCast'
+import { prepareMirrors } from '../../geometry/hingeRayCast'
 import type { MirrorSegment } from '../../geometry/hingeRayCast'
-import type { Point } from '../../geometry/symmetry'
+import { computeHingeChains, crossingKey } from '../../geometry/hingeChains'
 import { DEFAULT_INITIAL_ZOOM_OUT_FACTOR, paddedInitialViewBox, useViewBoxPanZoom } from '../../hooks/useViewBoxPanZoom'
 import { VIEW_SIZE } from '../PackingEditor/usePackingEditorInteraction'
 import {
@@ -110,6 +110,11 @@ export function TilingEditorCanvas() {
   const tilingSelectedLegId = useAppStore((s) => s.tilingSelectedLegId)
   const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
   const tilingSkeletonSelection = useAppStore((s) => s.tilingSkeletonSelection)
+  const tilingSelectedChainIds = useAppStore((s) => s.tilingSelectedChainIds)
+  const selectTilingHingeChain = useAppStore((s) => s.selectTilingHingeChain)
+  const attemptHingeChainLock = useAppStore((s) => s.attemptHingeChainLock)
+  const tilingSelectedHingeChainLock = useAppStore((s) => s.tilingSelectedHingeChainLock)
+  const selectTilingHingeChainLock = useAppStore((s) => s.selectTilingHingeChainLock)
   const clearTilingSelection = useAppStore((s) => s.clearTilingSelection)
   const deleteSelectedTilingLeg = useAppStore((s) => s.deleteSelectedTilingLeg)
   const deleteSelectedTilingVertex = useAppStore((s) => s.deleteSelectedTilingVertex)
@@ -275,55 +280,6 @@ export function TilingEditorCanvas() {
       )
   }, [faces, tilingGraph, legIdByVertexPair])
 
-  // Every hinge extended into a full reflected ray -- see
-  // `geometry/hingeRayCast.ts`'s module doc. Mirror candidates are global
-  // (every face's ridges, not just the hinge's own face) since a hinge's
-  // path can cross into a neighboring face's territory; recomputed every
-  // render alongside `skeletons` since both depend on live positions.
-  const hingeRays = useMemo(() => {
-    if (!tilingGraph) return []
-    const legMirrors: MirrorSegment[] = []
-    for (const leg of Object.values(tilingGraph.legs)) {
-      const a = tilingGraph.vertices[leg.vertexA]
-      const b = tilingGraph.vertices[leg.vertexB]
-      if (a && b) legMirrors.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
-    }
-    const ridgeMirrors: MirrorSegment[] = skeletons.flatMap(({ skeleton }) =>
-      skeleton.ridges.map((r) => ({ a: r.start, b: r.end })),
-    )
-    // Prepared once here rather than inside `castHingeRay` itself, since
-    // every hinge below reuses this same array across up to
-    // `tilingMaxHingeBounces` iterations each -- see `prepareMirrors`'s doc.
-    const mirrors = prepareMirrors([...legMirrors, ...ridgeMirrors])
-    const vertexPoints: Point[] = [
-      ...Object.values(tilingGraph.vertices).map((v) => ({ x: v.x, y: v.y })),
-      ...skeletons.flatMap(({ skeleton }) => skeleton.nodes.map((n) => n.position)),
-    ]
-    return skeletons.flatMap(({ faceId, skeleton }) =>
-      computeHinges(skeleton.nodes, skeleton.edges)
-        .filter((h) => Math.hypot(h.to.x - h.from.x, h.to.y - h.from.y) >= 1e-7)
-        .map((h, i) => {
-          const initialAngle = Math.atan2(h.to.y - h.from.y, h.to.x - h.from.x)
-          // The hinge's own origin is always a "vertex" (this very skeleton
-          // node), and normal incidence on the first bounce always reflects
-          // straight back through it -- excluding it from the stopping set
-          // is what makes the ray actually continue past that trivial
-          // round trip instead of terminating on its own starting point.
-          const otherVertices = vertexPoints.filter((p) => Math.hypot(p.x - h.from.x, p.y - h.from.y) >= tilingMinFeatureSize)
-          const points = castHingeRay(
-            h.from,
-            initialAngle,
-            mirrors,
-            UNIT_SQUARE_BOUNDARY,
-            otherVertices,
-            tilingMinFeatureSize,
-            tilingMaxHingeBounces,
-          )
-          return { key: `${faceId}-${i}`, points }
-        }),
-    )
-  }, [skeletons, tilingGraph, tilingMinFeatureSize, tilingMaxHingeBounces])
-
   // Nodes' `legIds` (via `legIdByEdgeIndex`) -- computed once per skeletons
   // recompute, reused by both the stale-lock-release effect below and the
   // dot/ring rendering further down. A node whose `tangentEdges` fail to
@@ -341,6 +297,145 @@ export function TilingEditorCanvas() {
       })),
     [skeletons],
   )
+
+  // Every hinge grouped into a selectable chain -- see
+  // `geometry/hingeChains.ts`'s module doc. Mirror candidates are global
+  // (every face's ridges, not just the hinge's own face) since a hinge's
+  // path can cross into a neighboring face's territory; recomputed every
+  // render alongside `skeletons`/`skeletonNodesWithLegIds` since all three
+  // depend on live positions -- this keeps hinges visually live while
+  // dragging a vertex, with no store write (no persisted state depends on
+  // this per-render recompute; see `useTilingEditorInteraction.ts`'s
+  // `onPointerUp` for what settles only on mouseup).
+  const hingeChains = useMemo(() => {
+    if (!tilingGraph) return []
+    const legMirrors: MirrorSegment[] = []
+    const legIdByMirrorIndex: string[] = []
+    for (const leg of Object.values(tilingGraph.legs)) {
+      const a = tilingGraph.vertices[leg.vertexA]
+      const b = tilingGraph.vertices[leg.vertexB]
+      if (a && b) {
+        legMirrors.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
+        legIdByMirrorIndex.push(leg.id)
+      }
+    }
+    const ridgeMirrors: MirrorSegment[] = skeletons.flatMap(({ skeleton }) =>
+      skeleton.ridges.map((r) => ({ a: r.start, b: r.end })),
+    )
+    const tilingVertices = Object.values(tilingGraph.vertices).map((v) => ({ id: v.id, x: v.x, y: v.y }))
+    return computeHingeChains(
+      skeletonNodesWithLegIds,
+      prepareMirrors(legMirrors),
+      legIdByMirrorIndex,
+      prepareMirrors(ridgeMirrors),
+      UNIT_SQUARE_BOUNDARY,
+      tilingVertices,
+      tilingMinFeatureSize,
+      tilingMaxHingeBounces,
+    )
+  }, [skeletons, skeletonNodesWithLegIds, tilingGraph, tilingMinFeatureSize, tilingMaxHingeBounces])
+
+  // The moment `tilingSelectedChainIds` reaches 2 ids that both resolve to
+  // a live chain, attempt the chain-collinearity lock -- this is the only
+  // place with the actual `HingeChain` objects (`hingeChains` is a plain
+  // per-render memo, never stored, see that useMemo's own doc), so the
+  // store's `selectTilingHingeChain` can't do this itself despite owning
+  // the selection. `attemptHingeChainLock` always clears the selection
+  // (success or error), which is exactly this effect's own re-run guard --
+  // it naturally stops firing after one attempt per 2-selection, not once
+  // per render while 2 stay selected.
+  useEffect(() => {
+    if (tilingSelectedChainIds.length !== 2) return
+    const [chainA, chainB] = tilingSelectedChainIds.map((id) => hingeChains.find((c) => c.id === id))
+    if (!chainA || !chainB) return
+    attemptHingeChainLock(chainA, chainB)
+  }, [tilingSelectedChainIds, hingeChains, attemptHingeChainLock])
+
+  // The fused polyline for every committed `HingeChainLock` whose both
+  // sides still resolve against the live `hingeChains`. `points` normally
+  // runs source A -> ... -> the (now shared) point on the common leg -> ...
+  // -> source B, EXCEPT when the two sources ended up close enough that one
+  // side's hinge now terminates directly at the other's source instead of
+  // independently reaching the common leg (see `tilingGraphActions.ts`'s
+  // `chainReachesCommonLeg` for the same case handled on the constraint
+  // side) -- a real, intended outcome (the two chains fuse into one
+  // continuous crease between the sources), not a broken match.
+  const lockedConnectors = useMemo(() => {
+    if (!tilingGraph) return []
+    const out: { lock: (typeof tilingGraph.hingeChainLocks)[number]; points: { x: number; y: number }[] }[] = []
+    for (const lock of tilingGraph.hingeChainLocks) {
+      const sigA = signatureOf(lock.a.sourceLegIds)
+      const sigB = signatureOf(lock.b.sourceLegIds)
+      const commonLegIdx = (c: (typeof hingeChains)[number]) =>
+        c.crossings.findIndex((cr) => cr.anchor.kind === 'leg' && cr.anchor.legId === lock.commonLegId)
+
+      // Resolves one lock side to `{ chain, points, reachesCommonLeg }` --
+      // `points` always starts at this side's own source and either ends at
+      // the shared common-leg point (`reachesCommonLeg: true`) or directly
+      // at the OTHER side's source (`false`, the coalesced case).
+      const resolveSide = (side: typeof lock.a, otherSig: string) => {
+        // Matched by source signature AND `tangentLegId` -- signature alone
+        // isn't enough, since one source can have several tangent
+        // directions (a real bug: an earlier version matched whichever
+        // same-signature chain happened to satisfy the crossing/coalesce
+        // check first, occasionally picking a completely different hinge
+        // than the one this lock side actually refers to).
+        const direct = hingeChains.find((c) => c.tangentLegId === side.tangentLegId && signatureOf(c.sourceLegIds) === signatureOf(side.sourceLegIds))
+        if (direct) {
+          const idx = commonLegIdx(direct)
+          if (idx !== -1) {
+            // Inclusive of `idx` -- the persisted side's own `crossings`
+            // includes the common-leg crossing itself (see
+            // `tilingGraphActions.ts`'s `sideLock`'s doc for why it must,
+            // otherwise `hingeChainLock.ts`'s `walkToCommonLeg` can never
+            // find it again on a later re-derivation).
+            const liveKeys = direct.crossings.slice(0, idx + 1).map((cr) => crossingKey(cr.anchor))
+            const storedKeys = side.crossings.map((cr) => crossingKey(cr.anchor))
+            if (liveKeys.length === storedKeys.length && liveKeys.every((k, i) => k === storedKeys[i])) {
+              const common = direct.crossings[idx]
+              const iP = direct.points.findIndex((p) => p.x === common.point.x && p.y === common.point.y)
+              if (iP !== -1) return { chain: direct, points: direct.points.slice(0, iP + 1), reachesCommonLeg: true }
+            }
+          }
+          if (direct.termination.kind === 'skeletonVertex' && signatureOf(direct.termination.legIds) === otherSig) {
+            return { chain: direct, points: direct.points, reachesCommonLeg: false }
+          }
+        }
+        // This side's own specific hinge may have been deduped away as an
+        // exact mutual retrace of some OTHER (structurally unrelated)
+        // hinge from the opposite source -- e.g. once the two sources end
+        // up close enough that this side's hinge terminates directly at
+        // the other's source, and that other source ALSO happens to have
+        // its own hinge tracing the identical physical crease in reverse
+        // (see `geometry/hingeChains.ts`'s `dedupeHingeChains`), only the
+        // lexicographically-smaller id survives. Look for that survivor
+        // from the other direction and use it reversed.
+        const mirrored = hingeChains.find(
+          (c) => signatureOf(c.sourceLegIds) === otherSig && c.termination.kind === 'skeletonVertex' && signatureOf(c.termination.legIds) === signatureOf(side.sourceLegIds),
+        )
+        return mirrored ? { chain: mirrored, points: [...mirrored.points].reverse(), reachesCommonLeg: false } : null
+      }
+
+      const a = resolveSide(lock.a, sigB)
+      const b = resolveSide(lock.b, sigA)
+      if (!a || !b) continue
+
+      if (a.chain === b.chain) {
+        // Both sides resolved to the exact same physical crease -- the
+        // fully-mutual-retrace edge case where each side's own tangent leg
+        // already equals the common leg, and after solving the two hinges
+        // exactly retrace one another. Already one continuous line.
+        out.push({ lock, points: a.points })
+      } else if (a.reachesCommonLeg && b.reachesCommonLeg) {
+        out.push({ lock, points: [...a.points, ...b.points.slice().reverse().slice(1)] })
+      } else if (!a.reachesCommonLeg) {
+        out.push({ lock, points: [...a.points, ...b.points.slice(1)] })
+      } else {
+        out.push({ lock, points: [...b.points, ...a.points.slice(1)] })
+      }
+    }
+    return out
+  }, [tilingGraph, hingeChains])
 
   // Reactive release of any lock whose live geometry has broken (the
   // straight skeleton no longer produces a node with exactly this
@@ -440,13 +535,40 @@ export function TilingEditorCanvas() {
               return <line key={`tiling-ridge-${faceId}-${i}`} className={className} x1={x1} y1={y1} x2={x2} y2={y2} />
             })
           })}
-          {hingeRays.map(({ key, points }) => (
-            <polyline
-              key={`tiling-hinge-${key}`}
-              className="tiling-hinge"
-              points={points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')}
-            />
-          ))}
+          {hingeChains.map((chain) => {
+            const pointsAttr = chain.points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
+            const selected = tilingSelectedChainIds.includes(chain.id)
+            return (
+              // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+              <g
+                key={`tiling-hinge-${chain.id}`}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  selectTilingHingeChain(chain.id, e.shiftKey)
+                }}
+              >
+                <polyline className="tiling-hinge-hit" points={pointsAttr} />
+                <polyline className={`tiling-hinge${selected ? ' selected' : ''}`} points={pointsAttr} />
+              </g>
+            )
+          })}
+          {lockedConnectors.map(({ lock, points }, i) => {
+            const pointsAttr = points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
+            const selected = tilingSelectedHingeChainLock === lock
+            return (
+              // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+              <g
+                key={`tiling-hinge-chain-locked-${i}`}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  selectTilingHingeChainLock(lock)
+                }}
+              >
+                <polyline className="tiling-hinge-hit" points={pointsAttr} />
+                <polyline className={`tiling-hinge-chain-locked${selected ? ' selected' : ''}`} points={pointsAttr} />
+              </g>
+            )
+          })}
         </g>
 
         {tilingGraph &&
@@ -559,7 +681,7 @@ export function TilingEditorCanvas() {
       ) : (
         <div className="tiling-empty-hint">Click "Seed tiling" to populate this view</div>
       )}
-      <TilingInspector />
+      <TilingInspector selectedHingeChains={hingeChains.filter((c) => tilingSelectedChainIds.includes(c.id))} />
     </div>
   )
 }

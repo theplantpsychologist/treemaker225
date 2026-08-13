@@ -98,8 +98,14 @@ function rayIntersectSegment(origin: Point, angle: number, mirror: PreparedMirro
   return { point: { x: origin.x + t * dx, y: origin.y + t * dy }, t }
 }
 
-function nearAnyVertex(p: Point, vertices: Point[], eps: number): boolean {
-  return vertices.some((v) => Math.hypot(v.x - p.x, v.y - p.y) < eps)
+/** Index of the first point in `vertices` within `eps` of `p`, or `-1` if
+ * none -- the index (not just a boolean) lets `castHingeRay` report exactly
+ * which vertex a hinge terminated at. */
+function nearAnyVertexIndex(p: Point, vertices: Point[], eps: number): number {
+  for (let i = 0; i < vertices.length; i++) {
+    if (Math.hypot(vertices[i].x - p.x, vertices[i].y - p.y) < eps) return i
+  }
+  return -1
 }
 
 const EPS_BOUNDARY = 1e-6
@@ -111,50 +117,116 @@ const EPS_BOUNDARY = 1e-6
  * flap's legs at x=0): the leg and the boundary segment are then the same
  * line, and floating-point tie-breaking between two lists searched
  * separately can't be trusted to prefer the boundary -- this coordinate
- * check catches that case regardless of which list "won". */
+ * check catches that case regardless of which list "won". Note that when
+ * the winning candidate was actually a `leg` (not the `boundary` list
+ * itself), the leg crossing is still real and gets recorded as a bounce
+ * before the ray terminates -- see the call site below. */
 function isPointOnSquareBoundary(p: Point): boolean {
   return p.x <= EPS_BOUNDARY || p.x >= 1 - EPS_BOUNDARY || p.y <= EPS_BOUNDARY || p.y >= 1 - EPS_BOUNDARY
 }
 
+/** One reflection point along a cast hinge ray -- `mirrorKind`/`mirrorIndex`
+ * identify exactly which segment (in the caller's own `legMirrors` or
+ * `ridgeMirrors` array) was hit, so a caller building `HingeChain`s (see
+ * `geometry/hingeChains.ts`) can map a `'leg'` bounce back to a real
+ * tiling-graph leg id without re-deriving the intersection. */
+export interface HingeBounce {
+  point: Point
+  mirrorKind: 'leg' | 'ridge'
+  mirrorIndex: number
+}
+
+export type HingeTermination =
+  | { kind: 'vertex'; vertexIndex: number }
+  | { kind: 'boundary' }
+  | { kind: 'maxBounces' }
+
+export interface HingeRayResult {
+  /** Full polyline traced, starting with `origin` -- same shape rendering
+   * always used, kept as a flat array for that reason. */
+  points: Point[]
+  /** One entry per point in `points.slice(1)` where the ray crossed a leg
+   * or a ridge. Usually one shorter than `points.slice(1)` -- a plain
+   * `boundary`-list hit (no mirror at all) or a `vertex` termination
+   * contributes a point with no corresponding bounce -- EXCEPT when the
+   * ray's final point is a leg/ridge that happens to coincide with the
+   * physical paper edge (see `castHingeRay`'s boundary-check above): that
+   * crossing is still real and gets its own trailing bounce entry even
+   * though the ray stops right there, so a caller mapping bounces to
+   * "what comes next" (e.g. `geometry/hingeChains.ts`'s `angleAfter`) must
+   * not assume a following point always exists. */
+  bounces: HingeBounce[]
+  termination: HingeTermination
+}
+
 /**
  * Cast a ray from `origin` in direction `initialAngle`, reflecting off
- * whichever `mirrors` segment (a tiling leg or a straight-skeleton ridge)
- * it hits nearest at each step, until it either exits through one of
- * `boundary`'s segments (the physical edge of the paper) or lands within
- * `vertexEps` of any point in `vertices` (an existing tiling vertex or
- * skeleton node, of any kind) -- whichever comes first. Returns the full
- * polyline traced, starting with `origin`. Capped at `maxBounces` (see
+ * whichever of `legMirrors`/`ridgeMirrors` (tiling legs and straight-
+ * skeleton ridges, kept as two separate arrays purely so bounces can be
+ * tagged with a real, resolvable identity -- see `HingeBounce`) it hits
+ * nearest at each step, until it either exits through one of `boundary`'s
+ * segments (the physical edge of the paper) or lands within `vertexEps` of
+ * any point in `vertices` (an existing tiling vertex or skeleton node, of
+ * any kind) -- whichever comes first. Capped at `maxBounces` (see
  * `hyperparams.tilingMaxHingeBounces`) so a degenerate/near-parallel
  * configuration -- or a genuinely unresolved "billiard" reflection path
  * that never reaches a vertex or the boundary -- can't hang the render
- * loop; the partial path traced so far is returned rather than throwing.
+ * loop; the partial path traced so far is returned (`termination.kind ===
+ * 'maxBounces'`) rather than throwing.
+ *
+ * `origin` itself is expected to already be one of the entries in
+ * `vertices` (every hinge's source IS a real skeleton vertex) -- rather
+ * than asking the caller to filter it out, the very first bounce alone
+ * (`bounce === 0`) ignores a landed-on-origin match, since a fresh
+ * `t ~ 0+epsilon` self-intersection with one of the origin's own adjacent
+ * mirrors (which literally share that point as an endpoint) would
+ * otherwise truncate every hinge to a useless zero-length stub. Every
+ * later bounce treats the origin as an ordinary vertex like any other, so
+ * a hinge that genuinely loops back around to near its own source (or
+ * passes near a different vertex) correctly stops there instead of
+ * sailing through it.
  */
 export function castHingeRay(
   origin: Point,
   initialAngle: number,
-  mirrors: PreparedMirror[],
+  legMirrors: PreparedMirror[],
+  ridgeMirrors: PreparedMirror[],
   boundary: PreparedMirror[],
   vertices: Point[],
   vertexEps: number,
   maxBounces: number,
-): Point[] {
+): HingeRayResult {
   const points: Point[] = [origin]
+  const bounces: HingeBounce[] = []
   let current = origin
   let angle = initialAngle
+  let skipKind: 'leg' | 'ridge' | null = null
   let skipIndex = -1
 
   for (let bounce = 0; bounce < maxBounces; bounce++) {
     let bestT = Infinity
     let bestPoint: Point | null = null
-    let bestMirrorIndex = -1
+    let bestKind: 'leg' | 'ridge' | 'boundary' = 'boundary'
+    let bestIndex = -1
 
-    for (let i = 0; i < mirrors.length; i++) {
-      if (i === skipIndex) continue
-      const hit = rayIntersectSegment(current, angle, mirrors[i])
+    for (let i = 0; i < legMirrors.length; i++) {
+      if (skipKind === 'leg' && i === skipIndex) continue
+      const hit = rayIntersectSegment(current, angle, legMirrors[i])
       if (hit && hit.t < bestT) {
         bestT = hit.t
         bestPoint = hit.point
-        bestMirrorIndex = i
+        bestKind = 'leg'
+        bestIndex = i
+      }
+    }
+    for (let i = 0; i < ridgeMirrors.length; i++) {
+      if (skipKind === 'ridge' && i === skipIndex) continue
+      const hit = rayIntersectSegment(current, angle, ridgeMirrors[i])
+      if (hit && hit.t < bestT) {
+        bestT = hit.t
+        bestPoint = hit.point
+        bestKind = 'ridge'
+        bestIndex = i
       }
     }
     for (const seg of boundary) {
@@ -162,20 +234,52 @@ export function castHingeRay(
       if (hit && hit.t < bestT) {
         bestT = hit.t
         bestPoint = hit.point
-        bestMirrorIndex = -1
+        bestKind = 'boundary'
+        bestIndex = -1
       }
     }
 
     if (!bestPoint) break // nothing ahead -- shouldn't happen, the boundary always bounds the space
 
     points.push(bestPoint)
-    if (isPointOnSquareBoundary(bestPoint) || nearAnyVertex(bestPoint, vertices, vertexEps)) break
 
-    const mirror = mirrors[bestMirrorIndex]
+    if (isPointOnSquareBoundary(bestPoint)) {
+      // A leg (or ridge) that runs exactly along the physical paper edge --
+      // e.g. a boundary-pinned flap's own leg -- is simultaneously a real
+      // crossing AND the point where there's no paper left to transmit
+      // into. The crossing itself is still genuine (a hinge-chain lock's
+      // "common leg" search needs to see it -- see `geometry/hingeChains.ts`),
+      // so record the bounce before terminating, rather than discarding it
+      // the way a bare boundary-list hit (no mirror at all) does.
+      if (bestKind === 'leg' || bestKind === 'ridge') {
+        bounces.push({ point: bestPoint, mirrorKind: bestKind, mirrorIndex: bestIndex })
+      }
+      return { points, bounces, termination: { kind: 'boundary' } }
+    }
+
+    const vertexIndex = nearAnyVertexIndex(bestPoint, vertices, vertexEps)
+    if (vertexIndex !== -1) {
+      const matchIsOrigin = Math.hypot(vertices[vertexIndex].x - origin.x, vertices[vertexIndex].y - origin.y) < vertexEps
+      if (!(bounce === 0 && matchIsOrigin)) {
+        return { points, bounces, termination: { kind: 'vertex', vertexIndex } }
+      }
+    }
+
+    if (bestKind === 'boundary') {
+      // The winning candidate came from the boundary list but its point
+      // isn't (numerically) on the boundary -- shouldn't happen since
+      // those segments ARE the square's edges, but there's no mirror to
+      // reflect off here either way, so stop rather than loop in place.
+      return { points, bounces, termination: { kind: 'boundary' } }
+    }
+
+    bounces.push({ point: bestPoint, mirrorKind: bestKind, mirrorIndex: bestIndex })
+    const mirror = bestKind === 'leg' ? legMirrors[bestIndex] : ridgeMirrors[bestIndex]
     angle = reflectAngle(angle, Math.atan2(mirror.ey, mirror.ex))
     current = bestPoint
-    skipIndex = bestMirrorIndex
+    skipKind = bestKind
+    skipIndex = bestIndex
   }
 
-  return points
+  return { points, bounces, termination: { kind: 'maxBounces' } }
 }
