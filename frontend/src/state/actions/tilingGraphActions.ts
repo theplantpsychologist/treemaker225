@@ -42,8 +42,6 @@ import {
   decomposeBend,
   getBinGeometry,
   legRow,
-  nearestEdge,
-  nearestEdgeRow,
   segmentsIntersect,
   snapNearestAngle,
 } from '../../geometry/tilingGraphOps'
@@ -339,18 +337,31 @@ function fullDeltaFromCoefficients(
   return delta
 }
 
-/** The largest `t in [0,1]` such that applying `t * delta` to every vertex
- * keeps every one of them inside `[0,1]^2`. Scaling a null-space vector by
- * any scalar keeps it in the null space (`A(t*v) = t*(Av) = 0`), so this is
- * the *only* way to respect the square's boundary without ever perturbing
- * a leg's committed angle -- clamping coordinates independently (the old,
- * wrong approach) changes each vertex by a different amount and silently
- * breaks the shared-leg angle invariant between them. */
-function computeMaxBoundedScale(vertices: Record<string, TilingVertex>, delta: Record<string, { dx: number; dy: number }>): number {
+/** Hexagon mode's indirect (bend) vertices are allowed to sit outside the
+ * physical unit square (see `commitBentPath`'s doc) -- every mechanism that
+ * otherwise keeps a vertex inside `[0,1]^2` (drag clamping, the post-solve
+ * pull-in) skips a vertex this returns true for. A flap is never exempt: its
+ * position always corresponds to a real point on the packed paper. */
+function boundsExempt(vertex: TilingVertex, hyperparams: HyperparamsState): boolean {
+  return vertex.kind === 'intermediate' && hyperparams.shape === 'hexagon'
+}
+
+/** The largest `t in [0,1]` such that applying `t * delta` to every
+ * non-exempt vertex (see `boundsExempt`) keeps it inside `[0,1]^2`. Scaling a
+ * null-space vector by any scalar keeps it in the null space (`A(t*v) =
+ * t*(Av) = 0`), so this is the *only* way to respect the square's boundary
+ * without ever perturbing a leg's committed angle -- clamping coordinates
+ * independently (the old, wrong approach) changes each vertex by a different
+ * amount and silently breaks the shared-leg angle invariant between them. */
+function computeMaxBoundedScale(
+  vertices: Record<string, TilingVertex>,
+  delta: Record<string, { dx: number; dy: number }>,
+  hyperparams: HyperparamsState,
+): number {
   let t = 1
   for (const [id, d] of Object.entries(delta)) {
     const v = vertices[id]
-    if (!v) continue
+    if (!v || boundsExempt(v, hyperparams)) continue
     for (const [pos, dd] of [
       [v.x, d.dx],
       [v.y, d.dy],
@@ -378,9 +389,13 @@ function applyScaledDelta(
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const OUT_OF_BOUNDS_EPS = 1e-9
 
-function worstOutOfBoundsVertex(vertices: Record<string, TilingVertex>): { id: string; target: { x: number; y: number } } | null {
+function worstOutOfBoundsVertex(
+  vertices: Record<string, TilingVertex>,
+  hyperparams: HyperparamsState,
+): { id: string; target: { x: number; y: number } } | null {
   let worst: { id: string; target: { x: number; y: number }; violation: number } | null = null
   for (const [id, v] of Object.entries(vertices)) {
+    if (boundsExempt(v, hyperparams)) continue
     const target = { x: clamp01(v.x), y: clamp01(v.y) }
     const violation = Math.abs(v.x - target.x) + Math.abs(v.y - target.y)
     if (violation > OUT_OF_BOUNDS_EPS && (!worst || violation > worst.violation)) {
@@ -399,55 +414,59 @@ function worstOutOfBoundsVertex(vertices: Record<string, TilingVertex>): { id: s
  * residual violation over ever moving off the null space) if a round makes
  * no progress -- rare, and only possible when the offending vertex has no
  * free direction left to correct it with. */
-function pullVerticesIntoBounds(graph: TilingGraphState): TilingGraphState {
+function pullVerticesIntoBounds(graph: TilingGraphState, hyperparams: HyperparamsState): TilingGraphState {
   let vertices = graph.vertices
   for (let iter = 0; iter < 8; iter++) {
-    const offender = worstOutOfBoundsVertex(vertices)
+    const offender = worstOutOfBoundsVertex(vertices, hyperparams)
     if (!offender) break
     const v = vertices[offender.id]
     const desired = { dx: offender.target.x - v.x, dy: offender.target.y - v.y }
     const coeffs = fitNullSpaceCoefficients(graph.nullSpaceBasis, offender.id, desired)
     const delta = fullDeltaFromCoefficients(Object.keys(vertices), graph.nullSpaceBasis, coeffs)
-    const t = computeMaxBoundedScale(vertices, delta)
+    const t = computeMaxBoundedScale(vertices, delta, hyperparams)
     if (t < 1e-9) break
     vertices = applyScaledDelta(vertices, delta, t)
   }
   return { ...graph, vertices }
 }
 
-function finalize(graph: TilingGraphState, tree: TreeState): TilingGraphState {
+function finalize(graph: TilingGraphState, tree: TreeState, hyperparams: HyperparamsState): TilingGraphState {
   const vertexIds = Object.keys(graph.vertices)
   const rows = activeRows(graph, tree)
   const withDerived = { ...graph, ...deriveFields(rows, vertexIds) }
-  return pullVerticesIntoBounds(withDerived)
+  return pullVerticesIntoBounds(withDerived, hyperparams)
 }
 
-function projectAlongBorder(edge: EdgeSide, p: { x: number; y: number }): number {
-  return edge === 'left' || edge === 'right' ? p.y : p.x
-}
-
-/** Picks, per border with at least one hull flap nearest it, the single
- * hull flap whose position along that border is closest to the border's
- * own midpoint -- the sole anchor for that border. Replaces "pin every
- * hull flap to its nearest edge" (which over-constrained adjacent
- * corner-ish flaps against each other) with a much lighter frame: up to 4
- * anchors, one per side actually touched by the hull. */
-function pickBorderAnchors(hullFlapIds: string[], vertices: Record<string, TilingVertex>): Partial<Record<EdgeSide, string>> {
-  const bestByEdge: Partial<Record<EdgeSide, { flapId: string; dist: number }>> = {}
-  for (const flapId of hullFlapIds) {
-    const v = vertices[flapId]
-    if (!v) continue
-    const edge = nearestEdge(v)
-    const dist = Math.abs(projectAlongBorder(edge, v) - 0.5)
-    const current = bestByEdge[edge]
-    if (!current || dist < current.dist) bestByEdge[edge] = { flapId, dist }
-  }
-  const anchors: Partial<Record<EdgeSide, string>> = {}
-  for (const [edge, best] of Object.entries(bestByEdge)) {
-    if (best) anchors[edge as EdgeSide] = best.flapId
-  }
-  return anchors
-}
+// `projectAlongBorder`/`pickBorderAnchors` backed the automatic boundary
+// pinning disabled above (see that comment) -- kept here, unused, as a
+// reference in case it's reinstated as an opt-in action later.
+//
+// function projectAlongBorder(edge: EdgeSide, p: { x: number; y: number }): number {
+//   return edge === 'left' || edge === 'right' ? p.y : p.x
+// }
+//
+// /** Picks, per border with at least one hull flap nearest it, the single
+//  * hull flap whose position along that border is closest to the border's
+//  * own midpoint -- the sole anchor for that border. Replaces "pin every
+//  * hull flap to its nearest edge" (which over-constrained adjacent
+//  * corner-ish flaps against each other) with a much lighter frame: up to 4
+//  * anchors, one per side actually touched by the hull. */
+// function pickBorderAnchors(hullFlapIds: string[], vertices: Record<string, TilingVertex>): Partial<Record<EdgeSide, string>> {
+//   const bestByEdge: Partial<Record<EdgeSide, { flapId: string; dist: number }>> = {}
+//   for (const flapId of hullFlapIds) {
+//     const v = vertices[flapId]
+//     if (!v) continue
+//     const edge = nearestEdge(v)
+//     const dist = Math.abs(projectAlongBorder(edge, v) - 0.5)
+//     const current = bestByEdge[edge]
+//     if (!current || dist < current.dist) bestByEdge[edge] = { flapId, dist }
+//   }
+//   const anchors: Partial<Record<EdgeSide, string>> = {}
+//   for (const [edge, best] of Object.entries(bestByEdge)) {
+//     if (best) anchors[edge as EdgeSide] = best.flapId
+//   }
+//   return anchors
+// }
 
 /** Collapses any `intermediate` vertex left with exactly 2 legs whose
  * directions, read outward from that vertex, are opposite each other
@@ -549,11 +568,14 @@ export function splitDirectLegsThroughNearbyVertices(
  * constraints into a fresh, independent graph (see `TilingGraphState.
  * constraints`'s doc -- edits from here on never flow back to packing).
  *
- * Structure, built in three layers:
- * 1. Up to 4 border anchors (see `pickBorderAnchors`) pinned to their
- *    nearest edge, plus a chain of direct paths around the convex hull
- *    ring connecting every hull flap to its neighbor -- a light, rigid
- *    frame, replacing the old "pin every hull vertex" scheme.
+ * Structure, built in three layers (`mode === 'manual'` skips layers 1b and
+ * 2 entirely, seeding bare flap vertices with no legs and no new
+ * constraints for the user to connect by hand):
+ * 1. (Automatic boundary pinning, formerly here, is disabled -- see the
+ *    comment where it used to run, just inside this function.) A chain of
+ *    direct paths around the convex hull ring connecting every hull flap to
+ *    its neighbor -- a light, rigid frame, replacing the old "pin every hull
+ *    vertex" scheme.
  * 2. A best-effort call to the *dormant* automated MILP solver
  *    (`/api/tiling-snap`, via `fetchTilingSnap`) purely to suggest which
  *    *additional* interior paths to start with -- only its `selectedDirectPaths`/
@@ -573,6 +595,7 @@ export async function seedTilingGraph(
   hyperparams: HyperparamsState,
   packingPositions: Record<string, { x: number; y: number }>,
   scale: number,
+  mode: 'suggested' | 'manual' = 'suggested',
 ): Promise<TilingGraphState> {
   const leafIds = getLeaves(tree)
   const vertices: Record<string, TilingVertex> = {}
@@ -590,30 +613,30 @@ export async function seedTilingGraph(
   const hullPoints = Object.values(vertices).map((v) => ({ id: v.id, x: v.x, y: v.y }))
   const hullRing = convexHullRing(hullPoints)
 
-  // Layer 1a: one anchor per occupied border -- written directly into
-  // `graphConstraints.perLeaf[...].boundary` (the same field the Inspector's
-  // own edge-pin button reads/writes) rather than a separate always-on
-  // mechanism, so a seed-time anchor shows up as an active pin button and
-  // can be cleared/re-pinned from the Inspector like any other boundary
-  // constraint. Set directly (not via `withPinEdge`) to skip its
-  // symmetry-pair mirroring -- this is an internal rigid-body anchor for a
-  // single flap, not a user-declared pin the partner should mirror too.
-  const anchors = pickBorderAnchors(hullRing, vertices)
-  for (const flapId of Object.values(anchors)) {
-    if (!flapId) continue
-    const constraint = graphConstraints.perLeaf[flapId]
-    if (constraint && (constraint.boundary.kind !== 'none' || constraint.locked.kind === 'locked')) continue
-    const row = nearestEdgeRow(flapId, vertices[flapId])
-    if (tryAccept(accepted, [row], columns)) {
-      accepted = [...accepted, row]
-      const edge = nearestEdge(vertices[flapId])
-      graphConstraints.perLeaf[flapId] = { ...(constraint ?? NO_LEAF_CONSTRAINT), boundary: { kind: 'pin_edge', edge } }
-    }
-  }
+  // Layer 1a (automatic boundary pinning) is disabled -- it sometimes
+  // over-constrained the seed in ways that were hard to spot and harder to
+  // undo (the user would need to notice a flap was pinned before they could
+  // clear it); pinning an edge/corner is easy to add afterward from the
+  // Inspector, so it's no longer done automatically here. Kept commented
+  // out (rather than deleted) as a reference for `pickBorderAnchors`'s own
+  // reasoning, still defined just below.
+  //
+  // const anchors = pickBorderAnchors(hullRing, vertices)
+  // for (const flapId of Object.values(anchors)) {
+  //   if (!flapId) continue
+  //   const constraint = graphConstraints.perLeaf[flapId]
+  //   if (constraint && (constraint.boundary.kind !== 'none' || constraint.locked.kind === 'locked')) continue
+  //   const row = nearestEdgeRow(flapId, vertices[flapId])
+  //   if (tryAccept(accepted, [row], columns)) {
+  //     accepted = [...accepted, row]
+  //     const edge = nearestEdge(vertices[flapId])
+  //     graphConstraints.perLeaf[flapId] = { ...(constraint ?? NO_LEAF_CONSTRAINT), boundary: { kind: 'pin_edge', edge } }
+  //   }
+  // }
 
   // Layer 1b: a chain of direct paths around the hull ring.
   const bins = binsFor(hyperparams, graphConstraints)
-  if (bins) {
+  if (bins && mode === 'suggested') {
     for (let i = 0; i < hullRing.length; i++) {
       const a = hullRing[i]
       const b = hullRing[(i + 1) % hullRing.length]
@@ -631,7 +654,7 @@ export async function seedTilingGraph(
 
   // Layer 2: best-effort MILP-suggested interior paths.
   const treeIn = toTreeIn(tree)
-  if (treeIn && bins) {
+  if (treeIn && bins && mode === 'suggested') {
     try {
       const positionsOut = leafIds.filter((id) => vertices[id]).map((id) => ({ nodeId: id, x: vertices[id].x, y: vertices[id].y }))
       const response = await fetchTilingSnap(treeIn, constraints, hyperparams, positionsOut, scale)
@@ -704,7 +727,7 @@ export async function seedTilingGraph(
   const x0 = flattenPositions(vertexIds, finalColumns, vertices)
   const solved = solveMinPerturbation(finalRows, finalColumns, x0)
   const solvedVertices = applyPositions(vertices, unflattenPositions(vertexIds, finalColumns, solved))
-  return finalize({ ...stagingGraph, vertices: solvedVertices }, tree)
+  return finalize({ ...stagingGraph, vertices: solvedVertices }, tree, hyperparams)
 }
 
 /** Pure preview geometry for a not-yet-committed path between two vertices
@@ -766,7 +789,7 @@ export function addDirectLeg(
 
   const vertices = applyPositions(graph.vertices, newPositions)
   const legs = { ...graph.legs, [newLeg.id]: newLeg }
-  return { graph: finalize({ ...graph, vertices, legs }, tree) }
+  return { graph: finalize({ ...graph, vertices, legs }, tree, hyperparams) }
 }
 
 export function commitBentPath(
@@ -909,7 +932,7 @@ export function commitBentPath(
   const vertices = applyPositions(workingVertices, newPositions)
   const legs = { ...workingLegs }
   for (const leg of newLegs) legs[leg.id] = leg
-  return { graph: finalize({ ...graph, vertices, legs }, tree) }
+  return { graph: finalize({ ...graph, vertices, legs }, tree, hyperparams) }
 }
 
 /** Commits whichever candidate the user picked from `previewPathCandidates`'s
@@ -980,7 +1003,7 @@ function hingeChainLockIsLive(lock: HingeChainLock, legs: Record<string, TilingL
 
 /** Deleting a direct leg just drops its row; deleting an indirect leg can
  * cascade -- see `cascadeDeleteLeg`'s doc. */
-export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId: string): TilingGraphState {
+export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, hyperparams: HyperparamsState, legId: string): TilingGraphState {
   const legs = { ...graph.legs }
   const vertices = { ...graph.vertices }
   cascadeDeleteLeg(vertices, legs, legId)
@@ -999,7 +1022,7 @@ export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId:
   const x0 = flattenPositions(vertexIds, columns, vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
   const finalVertices = applyPositions(vertices, unflattenPositions(vertexIds, columns, solved))
-  return finalize({ ...nextGraph, vertices: finalVertices }, tree)
+  return finalize({ ...nextGraph, vertices: finalVertices }, tree, hyperparams)
 }
 
 /** Deletes every leg touching `vertexId` (one at a time, via
@@ -1008,12 +1031,17 @@ export function deleteTilingLeg(graph: TilingGraphState, tree: TreeState, legId:
  * for an intermediate vertex it naturally disappears once its own last leg
  * goes. Mirrors the packing Inspector's delete button, generalized to not
  * need a kind-specific case split. */
-export function deleteTilingVertexAndLegs(graph: TilingGraphState, tree: TreeState, vertexId: string): TilingGraphState {
+export function deleteTilingVertexAndLegs(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  vertexId: string,
+): TilingGraphState {
   let current = graph
   const touching = () => Object.values(current.legs).filter((l) => l.vertexA === vertexId || l.vertexB === vertexId)
   let legsTouching = touching()
   while (legsTouching.length > 0) {
-    current = deleteTilingLeg(current, tree, legsTouching[0].id)
+    current = deleteTilingLeg(current, tree, hyperparams, legsTouching[0].id)
     legsTouching = touching()
   }
   return current
@@ -1204,7 +1232,7 @@ export function runTilingCleanup(graph: TilingGraphState, tree: TreeState, hyper
   const x0 = flattenPositions(vertexIds, columns, vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
   const finalVertices = applyPositions(vertices, unflattenPositions(vertexIds, columns, solved))
-  return finalize({ ...nextGraph, vertices: finalVertices }, tree)
+  return finalize({ ...nextGraph, vertices: finalVertices }, tree, hyperparams)
 }
 
 /** Rebuilds the graph's rows from a new `constraints` value and re-solves
@@ -1213,7 +1241,12 @@ export function runTilingCleanup(graph: TilingGraphState, tree: TreeState, hyper
  * unconditionally, trusting the caller not to offer an infeasible
  * combination; `solveMinPerturbation`'s least-squares degrades gracefully
  * even if a combination turns out inconsistent). */
-function applyConstraintChange(graph: TilingGraphState, tree: TreeState, nextConstraints: ConstraintsState): TilingGraphState {
+function applyConstraintChange(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  nextConstraints: ConstraintsState,
+): TilingGraphState {
   const nextGraph: TilingGraphState = { ...graph, constraints: nextConstraints }
   const vertexIds = Object.keys(nextGraph.vertices)
   const columns = buildColumnIndex(vertexIds)
@@ -1221,14 +1254,19 @@ function applyConstraintChange(graph: TilingGraphState, tree: TreeState, nextCon
   const x0 = flattenPositions(vertexIds, columns, nextGraph.vertices)
   const solved = solveMinPerturbation(rows, columns, x0)
   const vertices = applyPositions(nextGraph.vertices, unflattenPositions(vertexIds, columns, solved))
-  return finalize({ ...nextGraph, vertices }, tree)
+  return finalize({ ...nextGraph, vertices }, tree, hyperparams)
 }
 
 function tilingLeafConstraint(graph: TilingGraphState, flapId: string): LeafConstraint {
   return graph.constraints.perLeaf[flapId] ?? NO_LEAF_CONSTRAINT
 }
 
-export function pinTilingVertexToSymmetry(graph: TilingGraphState, tree: TreeState, flapId: string): Result<TilingGraphState> {
+export function pinTilingVertexToSymmetry(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  flapId: string,
+): Result<TilingGraphState> {
   const mode = graph.constraints.symmetryMode
   if (mode === 'none') return { error: 'Turn on symmetry mode in the packing editor first.' }
   const candidate: LeafConstraint = { ...tilingLeafConstraint(graph, flapId), symmetry: { kind: 'pin_symmetry' } }
@@ -1238,10 +1276,16 @@ export function pinTilingVertexToSymmetry(graph: TilingGraphState, tree: TreeSta
   if (res.point && findPointCollision(collectResolvedPoints(tree, nextConstraints), res.point, flapId)) {
     return { error: 'That position is already occupied by another vertex.' }
   }
-  return { graph: applyConstraintChange(graph, tree, nextConstraints) }
+  return { graph: applyConstraintChange(graph, tree, hyperparams, nextConstraints) }
 }
 
-export function pinTilingVertexToEdge(graph: TilingGraphState, tree: TreeState, flapId: string, edge: EdgeSide): Result<TilingGraphState> {
+export function pinTilingVertexToEdge(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  flapId: string,
+  edge: EdgeSide,
+): Result<TilingGraphState> {
   const candidate: LeafConstraint = { ...tilingLeafConstraint(graph, flapId), boundary: { kind: 'pin_edge', edge } }
   const res = resolveLeafConstraint(graph.constraints.symmetryMode, candidate)
   if (!res.feasible) return { error: "That edge can't be combined with this vertex's symmetry pin." }
@@ -1249,12 +1293,13 @@ export function pinTilingVertexToEdge(graph: TilingGraphState, tree: TreeState, 
   if (findAnyCollision(collectResolvedPoints(tree, nextConstraints))) {
     return { error: 'That position is already occupied by another vertex.' }
   }
-  return { graph: applyConstraintChange(graph, tree, nextConstraints) }
+  return { graph: applyConstraintChange(graph, tree, hyperparams, nextConstraints) }
 }
 
 export function pinTilingVertexToCorner(
   graph: TilingGraphState,
   tree: TreeState,
+  hyperparams: HyperparamsState,
   flapId: string,
   corner: CornerId,
 ): Result<TilingGraphState> {
@@ -1265,21 +1310,36 @@ export function pinTilingVertexToCorner(
   if (findAnyCollision(collectResolvedPoints(tree, nextConstraints))) {
     return { error: 'That corner is already occupied by another vertex.' }
   }
-  return { graph: applyConstraintChange(graph, tree, nextConstraints) }
+  return { graph: applyConstraintChange(graph, tree, hyperparams, nextConstraints) }
 }
 
-export function clearTilingVertexSymmetry(graph: TilingGraphState, tree: TreeState, flapId: string): TilingGraphState {
-  return applyConstraintChange(graph, tree, withClearedSymmetry(graph.constraints, flapId))
+export function clearTilingVertexSymmetry(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  flapId: string,
+): TilingGraphState {
+  return applyConstraintChange(graph, tree, hyperparams, withClearedSymmetry(graph.constraints, flapId))
 }
 
-export function clearTilingVertexBoundary(graph: TilingGraphState, tree: TreeState, flapId: string): TilingGraphState {
-  return applyConstraintChange(graph, tree, withClearedBoundary(graph.constraints, flapId))
+export function clearTilingVertexBoundary(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  flapId: string,
+): TilingGraphState {
+  return applyConstraintChange(graph, tree, hyperparams, withClearedBoundary(graph.constraints, flapId))
 }
 
-export function toggleTilingVertexLock(graph: TilingGraphState, tree: TreeState, flapId: string): TilingGraphState {
+export function toggleTilingVertexLock(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  flapId: string,
+): TilingGraphState {
   const current = tilingLeafConstraint(graph, flapId)
   if (current.locked.kind === 'locked') {
-    return applyConstraintChange(graph, tree, withClearedLock(graph.constraints, flapId))
+    return applyConstraintChange(graph, tree, hyperparams, withClearedLock(graph.constraints, flapId))
   }
   // Same guard as the packing Inspector's toggleLock: nothing new to freeze
   // if symmetry+boundary already fully fix it, and a pair's follower's
@@ -1288,7 +1348,7 @@ export function toggleTilingVertexLock(graph: TilingGraphState, tree: TreeState,
   if (current.symmetry.kind === 'pair' && flapId > current.symmetry.pairedWith) return graph
   const vertex = graph.vertices[flapId]
   if (!vertex) return graph
-  return applyConstraintChange(graph, tree, withLocked(graph.constraints, flapId, { x: vertex.x, y: vertex.y }))
+  return applyConstraintChange(graph, tree, hyperparams, withLocked(graph.constraints, flapId, { x: vertex.x, y: vertex.y }))
 }
 
 /** Locks (or, when called with a union of two existing locked/unlocked
@@ -1308,7 +1368,12 @@ export function toggleTilingVertexLock(graph: TilingGraphState, tree: TreeState,
  * `entryVertexId` off of *that* face's boundary order (rather than trusting
  * the caller) is both how the orientation gets fixed and how a caller
  * mistake (edges that don't all belong to one face) gets caught early. */
-export function setSkeletonLock(graph: TilingGraphState, tree: TreeState, legIds: string[]): Result<TilingGraphState> {
+export function setSkeletonLock(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  legIds: string[],
+): Result<TilingGraphState> {
   const deduped = Array.from(new Set(legIds))
   if (deduped.length < 4) return { error: 'Need at least 4 edges to lock a cotangent incircle.' }
   if (!deduped.every((id) => graph.legs[id])) return { error: 'One of the selected edges no longer exists.' }
@@ -1365,17 +1430,22 @@ export function setSkeletonLock(graph: TilingGraphState, tree: TreeState, legIds
   }
 
   const skeletonLocks: SkeletonLock[] = [...otherLocks, { legIds: deduped, entryVertexIds }]
-  return { graph: finalize({ ...graph, vertices, skeletonLocks }, tree) }
+  return { graph: finalize({ ...graph, vertices, skeletonLocks }, tree, hyperparams) }
 }
 
 /** Drops the lock matching `legIds` exactly (no re-solve of positions needed
  * -- dropping a constraint can't violate anything, only loosen the null
  * space; `finalize` recomputes `dof`/`freeAxes`/`nullSpaceBasis` for the
  * now-smaller row set). */
-export function unlockSkeletonVertex(graph: TilingGraphState, tree: TreeState, legIds: string[]): TilingGraphState {
+export function unlockSkeletonVertex(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  legIds: string[],
+): TilingGraphState {
   const sig = signatureOf(legIds)
   const skeletonLocks = graph.skeletonLocks.filter((lock) => signatureOf(lock.legIds) !== sig)
-  return finalize({ ...graph, skeletonLocks }, tree)
+  return finalize({ ...graph, skeletonLocks }, tree, hyperparams)
 }
 
 /** Drops any lock whose signature no longer appears among `liveSignatures`
@@ -1389,10 +1459,15 @@ export function unlockSkeletonVertex(graph: TilingGraphState, tree: TreeState, l
  * is called reactively from there rather than from any committed edit.
  * Returns `graph` unchanged (same reference) when nothing needs dropping,
  * so callers can skip a `set()` when nothing changed. */
-export function pruneStaleSkeletonLocks(graph: TilingGraphState, tree: TreeState, liveSignatures: Set<string>): TilingGraphState {
+export function pruneStaleSkeletonLocks(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  liveSignatures: Set<string>,
+): TilingGraphState {
   const kept = graph.skeletonLocks.filter((lock) => liveSignatures.has(signatureOf(lock.legIds)))
   if (kept.length === graph.skeletonLocks.length) return graph
-  return finalize({ ...graph, skeletonLocks: kept }, tree)
+  return finalize({ ...graph, skeletonLocks: kept }, tree, hyperparams)
 }
 
 /** Stable identity for one `HingeChainLock`, for matching against a
@@ -1494,7 +1569,7 @@ export function setHingeChainLock(
 ): Result<TilingGraphState> {
   if (signatureOf(chainA.sourceLegIds) !== signatureOf(chainB.sourceLegIds)) {
     const merged = ridgeAdjacentUnion(chainA.sourceLegIds, chainB.sourceLegIds)
-    if (merged) return setSkeletonLock(graph, tree, merged)
+    if (merged) return setSkeletonLock(graph, tree, hyperparams, merged)
   }
 
   const commonLegId = findCommonLeg(chainA, chainB)
@@ -1510,7 +1585,7 @@ export function setHingeChainLock(
   let current = graph
   for (const sourceLegIds of [chainA.sourceLegIds, chainB.sourceLegIds]) {
     if (sourceLegIds.length < 4) continue
-    const locked = setSkeletonLock(current, tree, sourceLegIds)
+    const locked = setSkeletonLock(current, tree, hyperparams, sourceLegIds)
     if ('error' in locked) return locked
     current = locked.graph
   }
@@ -1564,16 +1639,21 @@ export function setHingeChainLock(
     }
   }
   const newLock: HingeChainLock = { a: sideLock(chainA), b: sideLock(chainB), commonLegId }
-  return { graph: finalize({ ...current, vertices, hingeChainLocks: [...current.hingeChainLocks, newLock] }, tree) }
+  return { graph: finalize({ ...current, vertices, hingeChainLocks: [...current.hingeChainLocks, newLock] }, tree, hyperparams) }
 }
 
 /** Drops the lock matching `lock` exactly -- no re-solve needed, dropping a
  * constraint can only loosen the null space (same reasoning as
  * `unlockSkeletonVertex`). */
-export function unlockHingeChainLock(graph: TilingGraphState, tree: TreeState, lock: HingeChainLock): TilingGraphState {
+export function unlockHingeChainLock(
+  graph: TilingGraphState,
+  tree: TreeState,
+  hyperparams: HyperparamsState,
+  lock: HingeChainLock,
+): TilingGraphState {
   const sig = hingeChainLockSignature(lock)
   const hingeChainLocks = graph.hingeChainLocks.filter((l) => hingeChainLockSignature(l) !== sig)
-  return finalize({ ...graph, hingeChainLocks }, tree)
+  return finalize({ ...graph, hingeChainLocks }, tree, hyperparams)
 }
 
 /** Reactive release of any `HingeChainLock` whose live geometry has broken
@@ -1596,7 +1676,7 @@ export function pruneStaleTilingHingeChainLocks(graph: TilingGraphState, tree: T
       chainReachesCommonLeg(liveChains, lock.b.sourceLegIds, lock.b.tangentLegId, lock.commonLegId, lock.a.sourceLegIds),
   )
   if (kept.length === graph.hingeChainLocks.length) return graph
-  return finalize({ ...graph, hingeChainLocks: kept }, tree)
+  return finalize({ ...graph, hingeChainLocks: kept }, tree, hyperparams)
 }
 
 /** Applies a drag of `vertexId` toward `desiredPosition` as a linear
@@ -1611,15 +1691,18 @@ export function projectVertexDrag(
   graph: TilingGraphState,
   vertexId: string,
   desiredPosition: { x: number; y: number },
+  hyperparams: HyperparamsState,
 ): Record<string, { x: number; y: number }> {
   const current = graph.vertices[vertexId]
   if (!current) return {}
-  const target = { x: clamp01(desiredPosition.x), y: clamp01(desiredPosition.y) }
+  const target = boundsExempt(current, hyperparams)
+    ? desiredPosition
+    : { x: clamp01(desiredPosition.x), y: clamp01(desiredPosition.y) }
   const desired = { dx: target.x - current.x, dy: target.y - current.y }
   const coeffs = fitNullSpaceCoefficients(graph.nullSpaceBasis, vertexId, desired)
   const vertexIds = Object.keys(graph.vertices)
   const delta = fullDeltaFromCoefficients(vertexIds, graph.nullSpaceBasis, coeffs)
-  const t = computeMaxBoundedScale(graph.vertices, delta)
+  const t = computeMaxBoundedScale(graph.vertices, delta, hyperparams)
 
   // Omitting an entry for a vertex whose actual displacement this frame
   // rounds to zero (most of a large graph, on any given drag -- only the

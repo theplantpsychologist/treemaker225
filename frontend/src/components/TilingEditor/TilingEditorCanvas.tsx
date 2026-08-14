@@ -103,6 +103,7 @@ export function TilingEditorCanvas() {
   const constraints = useAppStore((s) => s.constraints)
   const clipToSquare = useAppStore((s) => s.clipToSquare)
   const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
+  const showTilingHinges = useAppStore((s) => s.showTilingHinges)
   const tilingMinFeatureSize = useAppStore((s) => s.hyperparams.tilingMinFeatureSize)
   const tilingMaxHingeBounces = useAppStore((s) => s.hyperparams.tilingMaxHingeBounces)
   const tilingGraph = useAppStore((s) => s.tilingGraph)
@@ -535,40 +536,42 @@ export function TilingEditorCanvas() {
               return <line key={`tiling-ridge-${faceId}-${i}`} className={className} x1={x1} y1={y1} x2={x2} y2={y2} />
             })
           })}
-          {hingeChains.map((chain) => {
-            const pointsAttr = chain.points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
-            const selected = tilingSelectedChainIds.includes(chain.id)
-            return (
-              // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-              <g
-                key={`tiling-hinge-${chain.id}`}
-                onPointerDown={(e) => {
-                  e.stopPropagation()
-                  selectTilingHingeChain(chain.id, e.shiftKey)
-                }}
-              >
-                <polyline className="tiling-hinge-hit" points={pointsAttr} />
-                <polyline className={`tiling-hinge${selected ? ' selected' : ''}`} points={pointsAttr} />
-              </g>
-            )
-          })}
-          {lockedConnectors.map(({ lock, points }, i) => {
-            const pointsAttr = points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
-            const selected = tilingSelectedHingeChainLock === lock
-            return (
-              // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-              <g
-                key={`tiling-hinge-chain-locked-${i}`}
-                onPointerDown={(e) => {
-                  e.stopPropagation()
-                  selectTilingHingeChainLock(lock)
-                }}
-              >
-                <polyline className="tiling-hinge-hit" points={pointsAttr} />
-                <polyline className={`tiling-hinge-chain-locked${selected ? ' selected' : ''}`} points={pointsAttr} />
-              </g>
-            )
-          })}
+          {showTilingHinges &&
+            hingeChains.map((chain) => {
+              const pointsAttr = chain.points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
+              const selected = tilingSelectedChainIds.includes(chain.id)
+              return (
+                // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+                <g
+                  key={`tiling-hinge-${chain.id}`}
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    selectTilingHingeChain(chain.id, e.shiftKey)
+                  }}
+                >
+                  <polyline className="tiling-hinge-hit" points={pointsAttr} />
+                  <polyline className={`tiling-hinge${selected ? ' selected' : ''}`} points={pointsAttr} />
+                </g>
+              )
+            })}
+          {showTilingHinges &&
+            lockedConnectors.map(({ lock, points }, i) => {
+              const pointsAttr = points.map((p) => toScreen(p.x, p.y).join(',')).join(' ')
+              const selected = tilingSelectedHingeChainLock === lock
+              return (
+                // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+                <g
+                  key={`tiling-hinge-chain-locked-${i}`}
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    selectTilingHingeChainLock(lock)
+                  }}
+                >
+                  <polyline className="tiling-hinge-hit" points={pointsAttr} />
+                  <polyline className={`tiling-hinge-chain-locked${selected ? ' selected' : ''}`} points={pointsAttr} />
+                </g>
+              )
+            })}
         </g>
 
         {tilingGraph &&

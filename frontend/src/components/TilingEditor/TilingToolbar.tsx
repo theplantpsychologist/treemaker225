@@ -20,6 +20,8 @@ export function TilingToolbar() {
   const tilingPathCandidates = useAppStore((s) => s.tilingPathCandidates)
   const showTilingFlapsAndRivers = useAppStore((s) => s.showTilingFlapsAndRivers)
   const setShowTilingFlapsAndRivers = useAppStore((s) => s.setShowTilingFlapsAndRivers)
+  const showTilingHinges = useAppStore((s) => s.showTilingHinges)
+  const setShowTilingHinges = useAppStore((s) => s.setShowTilingHinges)
 
   if (!packing) return null
 
@@ -36,6 +38,13 @@ export function TilingToolbar() {
             <span className="tiling-switch-thumb" />
           </span>
           show flaps &amp; rivers
+        </label>
+        <label className="tiling-switch">
+          <input type="checkbox" checked={showTilingHinges} onChange={(e) => setShowTilingHinges(e.target.checked)} />
+          <span className="tiling-switch-track">
+            <span className="tiling-switch-thumb" />
+          </span>
+          show hinges
         </label>
       </div>
       {tilingGraph && (

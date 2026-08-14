@@ -116,6 +116,10 @@ interface AppState {
    * view state, like `paneOpen`: not part of undo/redo history and not
    * saved with the session. */
   showTilingFlapsAndRivers: boolean
+  /** Tiling editor display toggle -- hides the straight-skeleton hinge
+   * chains (and any chain-collinearity lock connectors) when they clutter
+   * the view. Same pure view-state treatment as `showTilingFlapsAndRivers`. */
+  showTilingHinges: boolean
   packing: PackingState | null
   lastSolvedScale: number | null
   solving: boolean
@@ -218,10 +222,11 @@ interface AppState {
   setHyperparams: (hyperparams: Partial<HyperparamsState>) => void
   setClipToSquare: (value: boolean) => void
   setShowTilingFlapsAndRivers: (value: boolean) => void
+  setShowTilingHinges: (value: boolean) => void
   clearUiError: () => void
   runSolve: () => Promise<void>
 
-  seedTilingGraph: () => Promise<void>
+  seedTilingGraph: (mode?: 'suggested' | 'manual') => Promise<void>
   selectTilingVertex: (vertexId: string, additive: boolean) => void
   chooseTilingPathOption: (index: number) => void
   clearTilingSelection: () => void
@@ -268,6 +273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   hyperparams: DEFAULT_HYPERPARAMS,
   clipToSquare: true,
   showTilingFlapsAndRivers: true,
+  showTilingHinges: true,
   packing: null,
   lastSolvedScale: null,
   solving: false,
@@ -796,6 +802,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setClipToSquare: (value) => set({ clipToSquare: value }),
   setShowTilingFlapsAndRivers: (value) => set({ showTilingFlapsAndRivers: value }),
+  setShowTilingHinges: (value) => set({ showTilingHinges: value }),
   clearUiError: () => set({ uiError: null }),
 
   runSolve: async () => {
@@ -850,13 +857,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  seedTilingGraph: async () => {
+  seedTilingGraph: async (mode = 'suggested') => {
     const state = get()
     const packing = state.packing
     if (!packing || !state.tree.rootId) return
     if (state.hyperparams.shape === 'circle' || state.hyperparams.shape === 'square') return
     set({ tilingSeeding: true, tilingError: null })
-    const tilingGraph = await seedTilingGraphAction(state.tree, state.constraints, state.hyperparams, packing.positions, packing.scale)
+    const tilingGraph = await seedTilingGraphAction(state.tree, state.constraints, state.hyperparams, packing.positions, packing.scale, mode)
     get().pushUndoSnapshot()
     set({
       tilingGraph,
@@ -1008,7 +1015,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { tilingGraph, tilingSelectedLegId } = state
     if (!tilingGraph || !tilingSelectedLegId) return
     get().pushUndoSnapshot()
-    const tilingGraphNext = deleteTilingLegAction(tilingGraph, state.tree, tilingSelectedLegId)
+    const tilingGraphNext = deleteTilingLegAction(tilingGraph, state.tree, state.hyperparams, tilingSelectedLegId)
     set({ tilingGraph: tilingGraphNext, tilingSelectedLegId: null })
   },
 
@@ -1017,14 +1024,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { tilingGraph, tilingSelectedVertexIds } = state
     if (!tilingGraph || tilingSelectedVertexIds.length !== 1) return
     get().pushUndoSnapshot()
-    const tilingGraphNext = deleteTilingVertexAndLegs(tilingGraph, state.tree, tilingSelectedVertexIds[0])
+    const tilingGraphNext = deleteTilingVertexAndLegs(tilingGraph, state.tree, state.hyperparams, tilingSelectedVertexIds[0])
     set({ tilingGraph: tilingGraphNext, tilingSelectedVertexIds: [] })
   },
 
   pinTilingVertexToSymmetry: (flapId) => {
     const state = get()
     if (!state.tilingGraph) return
-    const result = pinTilingVertexToSymmetryAction(state.tilingGraph, state.tree, flapId)
+    const result = pinTilingVertexToSymmetryAction(state.tilingGraph, state.tree, state.hyperparams, flapId)
     if ('error' in result) {
       set({ tilingError: result.error })
       return
@@ -1036,7 +1043,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinTilingVertexToEdge: (flapId, edge) => {
     const state = get()
     if (!state.tilingGraph) return
-    const result = pinTilingVertexToEdgeAction(state.tilingGraph, state.tree, flapId, edge)
+    const result = pinTilingVertexToEdgeAction(state.tilingGraph, state.tree, state.hyperparams, flapId, edge)
     if ('error' in result) {
       set({ tilingError: result.error })
       return
@@ -1048,7 +1055,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinTilingVertexToCorner: (flapId, corner) => {
     const state = get()
     if (!state.tilingGraph) return
-    const result = pinTilingVertexToCornerAction(state.tilingGraph, state.tree, flapId, corner)
+    const result = pinTilingVertexToCornerAction(state.tilingGraph, state.tree, state.hyperparams, flapId, corner)
     if ('error' in result) {
       set({ tilingError: result.error })
       return
@@ -1061,21 +1068,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     if (!state.tilingGraph) return
     get().pushUndoSnapshot()
-    set({ tilingGraph: clearTilingVertexSymmetryAction(state.tilingGraph, state.tree, flapId) })
+    set({ tilingGraph: clearTilingVertexSymmetryAction(state.tilingGraph, state.tree, state.hyperparams, flapId) })
   },
 
   clearTilingVertexBoundary: (flapId) => {
     const state = get()
     if (!state.tilingGraph) return
     get().pushUndoSnapshot()
-    set({ tilingGraph: clearTilingVertexBoundaryAction(state.tilingGraph, state.tree, flapId) })
+    set({ tilingGraph: clearTilingVertexBoundaryAction(state.tilingGraph, state.tree, state.hyperparams, flapId) })
   },
 
   toggleTilingVertexLock: (flapId) => {
     const state = get()
     if (!state.tilingGraph) return
     get().pushUndoSnapshot()
-    set({ tilingGraph: toggleTilingVertexLockAction(state.tilingGraph, state.tree, flapId) })
+    set({ tilingGraph: toggleTilingVertexLockAction(state.tilingGraph, state.tree, state.hyperparams, flapId) })
   },
 
   selectTilingSkeletonVertex: (legIds) =>
@@ -1173,13 +1180,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     if (!state.tilingGraph) return
     get().pushUndoSnapshot()
-    set({ tilingGraph: unlockHingeChainLock(state.tilingGraph, state.tree, lock), tilingSelectedHingeChainLock: null })
+    set({
+      tilingGraph: unlockHingeChainLock(state.tilingGraph, state.tree, state.hyperparams, lock),
+      tilingSelectedHingeChainLock: null,
+    })
   },
 
   lockTilingSkeletonVertex: (legIds) => {
     const state = get()
     if (!state.tilingGraph) return
-    const result = setSkeletonLock(state.tilingGraph, state.tree, legIds)
+    const result = setSkeletonLock(state.tilingGraph, state.tree, state.hyperparams, legIds)
     if ('error' in result) {
       set({ tilingError: result.error })
       return
@@ -1192,7 +1202,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     if (!state.tilingGraph) return
     get().pushUndoSnapshot()
-    set({ tilingGraph: unlockSkeletonVertex(state.tilingGraph, state.tree, legIds), tilingSkeletonSelection: { kind: 'vertex', legIds } })
+    set({
+      tilingGraph: unlockSkeletonVertex(state.tilingGraph, state.tree, state.hyperparams, legIds),
+      tilingSkeletonSelection: { kind: 'vertex', legIds },
+    })
   },
 
   mergeTilingSkeletonVertices: (legIdsA, legIdsB) => {
@@ -1203,7 +1216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // -- the two merged nodes can share edges (e.g. a rectangle's 2 interior
     // nodes each touch 3 of its 4 sides, overlapping on 2).
     const mergedLegIds = Array.from(new Set([...legIdsA, ...legIdsB]))
-    const result = setSkeletonLock(state.tilingGraph, state.tree, mergedLegIds)
+    const result = setSkeletonLock(state.tilingGraph, state.tree, state.hyperparams, mergedLegIds)
     if ('error' in result) {
       set({ tilingError: result.error })
       return
@@ -1219,7 +1232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pruneStaleTilingSkeletonLocks: (liveSignatures) => {
     const state = get()
     if (!state.tilingGraph) return
-    const pruned = pruneStaleSkeletonLocks(state.tilingGraph, state.tree, liveSignatures)
+    const pruned = pruneStaleSkeletonLocks(state.tilingGraph, state.tree, state.hyperparams, liveSignatures)
     if (pruned === state.tilingGraph) return
     const stillSelected =
       state.tilingSkeletonSelection?.kind === 'vertex' && liveSignatures.has(signatureOf(state.tilingSkeletonSelection.legIds))
@@ -1253,7 +1266,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dragTilingVertexTo: (vertexId, x, y) => {
     const tilingGraph = get().tilingGraph
     if (!tilingGraph) return
-    const positions = projectVertexDrag(tilingGraph, vertexId, { x, y })
+    const positions = projectVertexDrag(tilingGraph, vertexId, { x, y }, get().hyperparams)
     const vertices = { ...tilingGraph.vertices }
     for (const [id, p] of Object.entries(positions)) {
       const v = vertices[id]
